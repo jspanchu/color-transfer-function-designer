@@ -1,0 +1,5 @@
+{
+  "transfer_function_file": "/home/local/KHQ/jaswant.panchumarti/dev/color-transfer-function-designer/data/volumes/original/CC0305_ge_3_59_M_seg.vp",
+  "segmentation_volume_file": "/home/local/KHQ/jaswant.panchumarti/dev/color-transfer-function-designer/data/volumes/original/CC0305_ge_3_59_M_seg.nii.gz",
+  "reference_volume_file": "/home/local/KHQ/jaswant.panchumarti/dev/color-transfer-function-designer/data/volumes/registered_on_ge_3_59_M/reg_philips_3_42_m.nii.gz"
+}

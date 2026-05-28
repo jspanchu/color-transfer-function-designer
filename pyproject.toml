@@ -1,0 +1,116 @@
+[project]
+name = "color-transfer-function-designer"
+version = "1.0.0"
+description = "Create color transfer functions for 3D volumes using machine learning"
+authors = [
+    {name = "Jaswant Panchumarti"},
+]
+dependencies = [
+    "torch==2.11.0",
+    "torchvision==0.26.0",
+    "trame>=3.12",
+    "trame-vuetify",
+    "trame-vtklocal",
+    "trame-color-opacity-editor",
+    "vtk==9.6.20260517.dev0",
+]
+requires-python = ">=3.10"
+readme = "README.rst"
+license = {text = "Apache Software License"}
+keywords = ["Python", "Interactive", "Web", "Application", "Framework"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Web Environment",
+    "License :: OSI Approved :: Apache Software License",
+    "Natural Language :: English",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Software Development :: Libraries :: Application Frameworks",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+
+[project.optional-dependencies]
+app = [
+    "pywebview",
+]
+jupyter = [
+    "jupyterlab",
+]
+dev = [
+    "pre-commit",
+    "ruff",
+    "pytest >=6",
+    "pytest-cov >=3",
+    "nox",
+]
+
+[project.scripts]
+color-transfer-function-designer = "color_transfer_function_designer.app:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+
+[tool.hatch.build]
+include = [
+  "/src/color_transfer_function_designer/**/*.py",
+  "/src/color_transfer_function_designer/**/*.js",
+  "/src/color_transfer_function_designer/**/*.css",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = [
+    "src/color_transfer_function_designer",
+]
+
+[tool.ruff]
+
+[tool.ruff.lint]
+extend-select = [
+    "ARG", # flake8-unused-arguments
+    "B",   # flake8-bugbear
+    "C4",  # flake8-comprehensions
+    "EM",  # flake8-errmsg
+    "EXE", # flake8-executable
+    "G",   # flake8-logging-format
+    "I",   # isort
+    "ICN", # flake8-import-conventions
+    "NPY", # NumPy specific rules
+    "PD",  # pandas-vet
+    "PGH", # pygrep-hooks
+    "PIE", # flake8-pie
+    "PL",  # pylint
+    "PT",  # flake8-pytest-style
+    "PTH", # flake8-use-pathlib
+    "RET", # flake8-return
+    "RUF", # Ruff-specific
+    "SIM", # flake8-simplify
+    "T20", # flake8-print
+    "UP",  # pyupgrade
+    "YTT", # flake8-2020
+]
+ignore = [
+    "PLR09",   # Too many <...>
+    "PLR2004", # Magic value used in comparison
+    "ISC001",  # Conflicts with formatter
+]
+isort.required-imports = []
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["T20"]
+"noxfile.py" = ["T20"]
+"src/**" = ["SIM117"]
+[tool.semantic_release]
+version_toml = [
+    "pyproject.toml:project.version",
+]
+version_variables = [
+    "src/color_transfer_function_designer/__init__.py:__version__",
+]
+
+[[tool.uv.index]]
+name = "vtk"
+url = "https://wheels.vtk.org"
+
+build_command = "uv build"

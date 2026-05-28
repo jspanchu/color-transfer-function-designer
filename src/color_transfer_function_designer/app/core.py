@@ -1,0 +1,1104 @@
+import asyncio
+import copy
+import ctypes
+import json
+import logging
+import os
+import pathlib
+import time
+
+import numpy as np
+import numpy.typing as npt
+import torch
+import vtkmodules.vtkInteractionStyle
+import vtkmodules.vtkRenderingOpenGL2  # noqa: F401
+from trame.app import TrameApp, asynchronous
+from trame.decorators import change, controller
+from trame.ui.vuetify3 import SinglePageWithDrawerLayout
+from trame.widgets import color_opacity_editor, vtklocal, vuetify3
+from vtkmodules.util.numpy_support import numpy_to_vtk
+from vtkmodules.vtkCommonCore import VTK_DOUBLE
+from vtkmodules.vtkCommonDataModel import vtkImageData, vtkPiecewiseFunction
+from vtkmodules.vtkFiltersCore import vtkArrayCalculator
+from vtkmodules.vtkIOImage import vtkNIFTIImageReader
+from vtkmodules.vtkRenderingCore import (
+    vtkDiscretizableColorTransferFunction,
+    vtkRenderer,
+    vtkRenderWindow,
+    vtkRenderWindowInteractor,
+    vtkVolume,
+    vtkVolumeProperty,
+)
+from vtkmodules.vtkRenderingVolumeOpenGL2 import vtkSmartVolumeMapper
+
+from color_transfer_function_designer.app.dataset import (
+    compute_gradient_magnitude,
+    vtk_image_to_numpy,
+)
+from color_transfer_function_designer.app.file import (
+    FileBrowser,
+    FileDialog,
+)
+from color_transfer_function_designer.app.logger import install_handlers
+from color_transfer_function_designer.app.model import TransferFunctionNet
+from color_transfer_function_designer.app.transfer import (
+    convert_lut_to_state_format,
+    lut_from_network,
+    transfer_segmentation_lut,
+)
+from color_transfer_function_designer.app.utils import (
+    read_paraview_tf_from_json,
+    read_slicer_tf_from_ascii,
+    write_slicer_vp,
+)
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+class App(TrameApp):
+    logger = logging.getLogger("color_transfer_function_designer.app.core.TrainingApp")
+    install_handlers(logger)
+
+    def __init__(
+        self,
+        data_directory,
+        config: str | None = None,
+        server=None,
+    ):
+        super().__init__(server, client_type="vue3")
+
+        self.state.trame__title = "Color Transfer Function Designer"
+        self.file_browser = FileBrowser(home=data_directory)
+
+        torch.manual_seed(2026)
+        os.environ["VTK_DEFAULT_OPENGL_WINDOW"] = "vtkEGLRenderWindow"
+
+        self._set_default_parameters()
+
+        # Model
+        self._model = TransferFunctionNet().to(device=device)
+        self._model_init_state = copy.deepcopy(self._model.state_dict())
+
+        # Task manager
+        self._transfer_executor_future: asyncio.Future | None = None
+        self._pending_tasks = set()
+        self._last_progress_update_time: float = 0.0
+
+        # Used to record file type when FileDialog is opened.
+        self._requested_file_type = ""
+
+        # VTK.wasm views
+        self._ref_html_view = None
+        self._seg_html_view = None
+        self._ref_wnd, self._ref_renderer, self._ref_volume = self._setup_vtk_pipeline()
+        self._seg_wnd, self._seg_renderer, self._seg_volume = self._setup_vtk_pipeline()
+
+        # Ground-truth transfer function data (in segmentation scalar range)
+        self._gt_ctf = vtkDiscretizableColorTransferFunction(
+            allow_duplicate_scalars=True, discretize=True, number_of_values=256
+        )
+        self._gt_sof = vtkPiecewiseFunction(allow_duplicate_scalars=True)
+        self._gt_gof = vtkPiecewiseFunction(allow_duplicate_scalars=True)
+
+        # Input volumes
+        self._ref_volume_data = None
+        self._seg_volume_data = None
+
+        # Editor widget state
+        self.state.seg_hist_y_range = []
+        self.state.seg_histograms = []
+        self.state.seg_colors = []
+        self.state.seg_opacities = []
+        self.state.seg_scalar_range = []
+        self.state.ref_hist_y_range = []
+        self.state.ref_histograms = []
+        self.state.ref_colors = []
+        self.state.ref_opacities = []
+        self.state.ref_scalar_range = []
+
+        # File upload state
+        self.state.transfer_function_file = ""
+        self.state.segmentation_volume_file = ""
+        self.state.reference_volume_file = ""
+
+        # Progress state
+        self.state.progress_percent = 0
+
+        # Transfer function state
+        self.state.reference_lut_source = "linear_map"
+
+        # Button disabled states
+        self.state.allow_transfer = False
+
+        # Dialog visibility
+        self.state.show_transfer_dialog = False
+
+        self._generate_ui()
+
+        if config is not None:
+            self._load_from_config(config)
+
+    def _set_default_parameters(self):
+        # default training parameters
+        self.state.n_epochs = 2
+        self.state.n_slices = 1024
+        self.state.batch_size = 16
+        self.state.learning_rate = 5.0e-3
+
+        # default volume parameters
+        self.state.slice_plane_margin = 0.25
+
+        # default lut parameters
+        self.state.n_lut_sampling_points = 64
+
+    @change("n_slices")
+    def on_n_slices_change(self, n_slices, **_):
+        self.state.batch_size = min(n_slices, self.state.batch_size)
+
+    @change("reference_lut_source")
+    def on_reference_lut_source_change(self, **_):
+        if self._ref_volume_data is None:
+            return
+        if self.state.reference_lut_source == "nn":
+            ctf, otf, gof = self._build_network_transfer_functions(
+                self._ref_volume_data,
+                snapshot_lut_in_state=True,
+            )
+            self._ref_volume.property.SetColor(ctf)
+            self._ref_volume.property.SetScalarOpacity(otf)
+            self._ref_volume.property.SetGradientOpacity(gof)
+            self._ref_html_view.update()
+        elif self.state.reference_lut_source == "linear_map":
+            ctf, otf, gof = self._map_ground_truth_lut_to_ref_volume_scalars(
+                self._ref_volume_data,
+                snapshot_lut_in_state=True,
+            )
+            self._ref_volume.property.SetColor(ctf)
+            self._ref_volume.property.SetScalarOpacity(otf)
+            self._ref_volume.property.SetGradientOpacity(gof)
+            self._ref_html_view.update()
+        else:
+            self.logger.error("Unknown reference_lut_source!")
+
+    # ------------------------------------------------------------------
+    # Properties
+    # ------------------------------------------------------------------
+
+    @property
+    def ctrl(self):
+        return self.server.controller
+
+    @property
+    def state(self):
+        return self.server.state
+
+    @property
+    def ground_truth_colors(self):
+        data_size = self._gt_ctf.size * 4
+        data_pointer_str = self._gt_ctf.data_pointer
+        address_str = data_pointer_str.split("_")[1]
+        address = int(address_str, 16)
+        buffer = (ctypes.c_double * data_size).from_address(address)
+        return np.frombuffer(buffer, dtype=np.float64).reshape(-1, 4)
+
+    @property
+    def ground_truth_opacities(self):
+        opacities = []
+        for i in range(self._gt_sof.size):
+            values = [0, 0, 0, 0]
+            self._gt_sof.GetNodeValue(i, values)
+            opacities.extend(values[:2])
+        return np.array(opacities, dtype=np.float64).reshape(-1, 2)
+
+    @property
+    def ground_truth_gradient_opacities(self):
+        opacities = []
+        for i in range(self._gt_gof.size):
+            values = [0, 0, 0, 0]
+            self._gt_gof.GetNodeValue(i, values)
+            opacities.extend(values[:2])
+        return np.array(opacities, dtype=np.float64).reshape(-1, 2)
+
+    # ------------------------------------------------------------------
+    # File handlers
+    # ------------------------------------------------------------------
+
+    @controller.set("open_file_dialog")
+    def open_file_dialog(self, file_type):
+        self.logger.debug("open_file_dialog:file-type='%s'", file_type)
+        self.state.file_dialog_is_open = not self.state.file_dialog_is_open
+        self._requested_file_type = file_type
+
+    @controller.add("on_file_open")
+    def on_file_open(self, path):
+        self.logger.debug("on_file_open %s", path)
+        if self._requested_file_type == "transfer_function":
+            self._load_transfer_function(path)
+        elif self._requested_file_type == "segmentation_volume":
+            self._load_segmentation_volume(path)
+        elif self._requested_file_type == "reference_volume":
+            self._load_reference_volume(path)
+
+    @controller.add("on_file_save")
+    def on_file_save(self, path):
+        self.logger.debug("on_file_save %s", path)
+        if self._ref_volume_data is None:
+            self.logger.error("No reference volume loaded, cannot export.")
+            return
+        colors, opacities, gradient_opacities = lut_from_network(
+            self._model,
+            self._ref_volume_data,
+            n_points=self.state.n_lut_sampling_points,
+        )
+        lut_rgb = np.array([[s, r, g, b] for s, (r, g, b) in colors])
+        lut_scalar_alpha = np.array(opacities)
+        lut_gradient_alpha = np.array(gradient_opacities)
+        write_slicer_vp(path, lut_rgb, lut_scalar_alpha, lut_gradient_alpha)
+        self.logger.info("Exported transfer function to %s", path)
+
+    def open_export_dialog(self):
+        self.state.file_dialog_save_mode = True
+        self.state.file_dialog_save_filename = ""
+        self.state.file_dialog_is_open = True
+
+    # ------------------------------------------------------------------
+    # Local-path file loaders (used by on_file_open and _load_from_config)
+    # ------------------------------------------------------------------
+
+    def _load_transfer_function(self, path: pathlib.Path) -> None:
+        self.logger.debug("Loading TF from %s", str(path))
+        self._unload_transfer_function()
+
+        # Load file
+        if path.suffix == ".vp":
+            with path.open("rb") as f:
+                content = f.read()
+                (
+                    colors,
+                    scalar_opacities,
+                    gradient_opacities,
+                ) = read_slicer_tf_from_ascii(content.decode())
+                self._initialize_transfer_functions(
+                    colors, scalar_opacities, gradient_opacities
+                )
+        elif path.suffix == ".json":
+            with path.open("rb") as f:
+                (
+                    colors,
+                    scalar_opacities,
+                    gradient_opacities,
+                ) = read_paraview_tf_from_json(json.load(f))
+                self._initialize_transfer_functions(
+                    colors, scalar_opacities, gradient_opacities
+                )
+        else:
+            self.logger.error("Unsupported TF file format: %s", path)
+            return
+
+        self.state.transfer_function_file = str(path)
+
+        if self._ref_volume_data is not None and self._seg_volume_data is not None:
+            self._apply_gt_tf_to_segmentation_volume()
+        self._check_all_loaded()
+
+    def _unload_transfer_function(self):
+        # Reset state
+        self.state.seg_colors = []
+        self.state.seg_opacities = []
+        self.state.seg_scalar_range = []
+        self.state.transfer_function_file = ""
+        self._gt_gof.RemoveAllPoints()
+        self._gt_sof.RemoveAllPoints()
+        self._gt_ctf.RemoveAllPoints()
+        self._check_all_loaded()
+
+    def _load_segmentation_volume(self, path: pathlib.Path) -> None:
+        self._unload_segmentation_volume()
+        # Read segmentation volume
+        reader = vtkNIFTIImageReader(file_name=str(path))
+        reader.Update()
+        self._seg_volume_data = reader.output
+        if self._seg_volume_data is None:
+            return
+        self.logger.debug(
+            "Loaded segmentation range [%f,%f] from %s",
+            self._seg_volume_data.scalar_range[0],
+            self._seg_volume_data.scalar_range[1],
+            reader.file_name,
+        )
+        self._seg_volume.mapper.input_data = self._seg_volume_data
+
+        # Directly apply GT TF to segmentation volume
+        self._apply_gt_tf_to_segmentation_volume()
+
+        # Set state
+        self.state.segmentation_volume_file = str(path)
+
+        # Render
+        self._seg_renderer.AddVolume(self._seg_volume)
+        self._check_all_loaded()
+        self._seg_renderer.ResetCamera()
+        self._seg_html_view.update(push_camera=True)
+
+    def _unload_segmentation_volume(self):
+        # Reset state
+        self.state.segmentation_volume_file = ""
+        # Reset renderer
+        self._seg_renderer.RemoveAllViewProps()
+        self._seg_volume_data = None
+        self._seg_html_view.update()
+        self._check_all_loaded()
+
+    def _load_reference_volume(self, path: pathlib.Path) -> None:
+        self._unload_reference_volume()
+        # Read volume
+        reader = vtkNIFTIImageReader(file_name=str(path))
+        reader.Update()
+        scaler = vtkArrayCalculator(
+            result_array_name="RealScalars", result_array_type=VTK_DOUBLE
+        )
+        scaler.AddScalarArrayName("NIFTI")
+        scaler.function = f"NIFTI * {reader.rescale_slope} + {reader.rescale_intercept}"
+        scaler.input_data = reader.output
+        scaler.Update()
+        self._ref_volume_data = scaler.output
+        if self._ref_volume_data is None:
+            return
+        self.logger.debug(
+            "Loaded reference volume scalar range [%f, %f] from %s",
+            self._ref_volume_data.scalar_range[0],
+            self._ref_volume_data.scalar_range[1],
+            reader.file_name,
+        )
+
+        self._ref_volume.mapper.input_data = self._ref_volume_data
+        if self.state.reference_lut_source == "nn":
+            ctf, otf, gof = self._build_network_transfer_functions(
+                self._ref_volume_data,
+                snapshot_lut_in_state=True,
+            )
+            self._ref_volume.property.SetColor(ctf)
+            self._ref_volume.property.SetScalarOpacity(otf)
+            self._ref_volume.property.SetGradientOpacity(gof)
+        elif self.state.reference_lut_source == "linear_map":
+            ctf, otf, gof = self._map_ground_truth_lut_to_ref_volume_scalars(
+                self._ref_volume_data,
+                snapshot_lut_in_state=True,
+            )
+            self._ref_volume.property.SetColor(ctf)
+            self._ref_volume.property.SetScalarOpacity(otf)
+            self._ref_volume.property.SetGradientOpacity(gof)
+        else:
+            self.logger.error("Unknown reference_lut_source!")
+
+        # Set state
+        self.state.reference_volume_file = str(path)
+
+        # Render
+        self._ref_renderer.AddVolume(self._ref_volume)
+        self._check_all_loaded()
+        self._ref_renderer.ResetCamera()
+        self._ref_html_view.update(push_camera=True)
+
+    def _unload_reference_volume(self):
+        # Reset state
+        self.state.reference_volume_file = ""
+        self.state.ref_colors = []
+        self.state.ref_opacities = []
+        self.state.ref_gradient_opacities = []
+        self.state.ref_scalar_range = []
+        # Reset renderer
+        self._ref_renderer.RemoveAllViewProps()
+        self._ref_volume_data = None
+        self._ref_html_view.update()
+        self._check_all_loaded()
+
+    def _load_from_config(self, config_path: str) -> None:
+        self.logger.debug("Load configuration from %s", config_path)
+        try:
+            with pathlib.Path(config_path).open() as f:
+                cfg = json.load(f)
+        except (OSError, json.JSONDecodeError) as exc:
+            self.logger.error("Could not load config %s: %s", config_path, exc)
+            return
+
+        if tf := cfg.get("transfer_function_file"):
+            path = pathlib.Path(tf)
+            if path.is_file():
+                self._load_transfer_function(path)
+            else:
+                self.logger.error("transfer_function_file not found: %s", tf)
+
+        if seg := cfg.get("segmentation_volume_file"):
+            path = pathlib.Path(seg)
+            if path.is_file():
+                self._load_segmentation_volume(path)
+            else:
+                self.logger.error("segmentation_volume_file not found: %s", seg)
+
+        if ref := cfg.get("reference_volume_file"):
+            path = pathlib.Path(ref)
+            if path.is_file():
+                self._load_reference_volume(path)
+            else:
+                self.logger.error("reference_volume_file not found: %s", ref)
+        # auto confirm
+        # self.on_confirm_transfer()
+
+    # ------------------------------------------------------------------
+    # Permission dialog controllers
+    # ------------------------------------------------------------------
+
+    @controller.set("on_open_init_dialog")
+    def on_open_init_dialog(self):
+        self.state.show_init_dialog = True
+
+    @controller.set("on_open_transfer_dialog")
+    def on_open_transfer_dialog(self):
+        self.state.show_transfer_dialog = True
+
+    @controller.set("on_confirm_transfer")
+    def on_confirm_transfer(self):
+        self.state.allow_transfer = False
+        self.state.show_transfer_dialog = False
+        self.state.transfer_complete = False
+        self.state.reference_lut_source = "nn"
+        self._queue_task(self._execute_transfer())
+
+    # ------------------------------------------------------------------
+    # Task manager
+    # ------------------------------------------------------------------
+    def _queue_task(self, coroutine):
+        self._last_progress_update_time = 0.0
+        task = asynchronous.create_task(coroutine)
+        self._pending_tasks.add(task)
+        task.add_done_callback(self._on_task_done)
+
+    def _on_task_done(self, task):
+        self._pending_tasks.discard(task)
+
+    # ------------------------------------------------------------------
+    # Training
+    # ------------------------------------------------------------------
+
+    def reset_reference_lut(self):
+        if self.state.reference_lut_source == "nn":
+            self._model.load_state_dict(self._model_init_state)
+            ctf, otf, gof = self._build_network_transfer_functions(
+                self._ref_volume_data, snapshot_lut_in_state=True
+            )
+            self.state.allow_transfer = True
+            self._ref_volume.property.SetColor(ctf)
+            self._ref_volume.property.SetScalarOpacity(otf)
+            self._ref_volume.property.SetGradientOpacity(gof)
+            self._ref_html_view.update()
+        elif self.state.reference_lut_source == "linear_map":
+            ctf, otf, gof = self._map_ground_truth_lut_to_ref_volume_scalars(
+                self._ref_volume_data, snapshot_lut_in_state=True
+            )
+            self.state.allow_transfer = True
+            self._ref_volume.property.SetColor(ctf)
+            self._ref_volume.property.SetScalarOpacity(otf)
+            self._ref_volume.property.SetGradientOpacity(gof)
+            self._ref_html_view.update()
+        else:
+            self.logger.error("Unknown reference_lut_source!")
+
+    async def _execute_transfer(self):
+        self.logger.debug("Transferring lookup tables using network...")
+
+        loop = asyncio.get_running_loop()
+
+        def transfer_progress_callback(
+            epoch_id: int, batch_id: int, progress_percent: float, loss: float
+        ) -> None:
+            self.logger.debug(
+                "epoch: %d/%d - batch: %d - transfer progress: (%.2f) - loss: %.6f",
+                epoch_id,
+                self.state.n_epochs,
+                batch_id,
+                progress_percent,
+                loss,
+            )
+            now = time.monotonic()
+            if (
+                # first progress event
+                self._last_progress_update_time == 0.0
+                # minimum 2 seconds between progress emissions
+                or now - self._last_progress_update_time >= 2.0
+                # last progress event
+                or progress_percent == 100.0
+            ):
+                self._last_progress_update_time = now
+                loop.call_soon_threadsafe(
+                    self._on_transfer_progress, progress_percent, loss
+                )
+
+        self._transfer_executor_future = loop.run_in_executor(
+            None,
+            lambda: transfer_segmentation_lut(
+                self._model,
+                ref_volume=self._ref_volume_data,
+                seg_volume=self._seg_volume_data,
+                lut_rgb=self.ground_truth_colors,
+                lut_scalar_alpha=self.ground_truth_opacities,
+                lut_gradient_alpha=self.ground_truth_gradient_opacities,
+                n_epochs=self.state.n_epochs,
+                n_slices=self.state.n_slices,
+                batch_size=self.state.batch_size,
+                progress_callback=transfer_progress_callback,
+                lr=self.state.learning_rate,
+                margin=self.state.slice_plane_margin,
+            ),
+        )
+
+        self._model = await self._transfer_executor_future
+        self.logger.debug("Transfer complete!")
+        with self.state:
+            self.state.progress_percent = 100
+            ctf, otf, gof = self._build_network_transfer_functions(
+                self._ref_volume_data, snapshot_lut_in_state=True
+            )
+            self._ref_volume.property.SetColor(ctf)
+            self._ref_volume.property.SetScalarOpacity(otf)
+            self._ref_volume.property.SetGradientOpacity(gof)
+            self._ref_html_view.update()
+            self.state.allow_transfer = False
+
+        return self._transfer_executor_future
+
+    def _on_transfer_progress(self, progress_percent, loss):
+        assert progress_percent >= 0, (
+            "progress_percent must be greater than or equal to 0"
+        )
+        assert progress_percent <= 100, (
+            "progress_percent must be less than or equal to 100"
+        )
+        with self.state:
+            self.state.progress_percent = int(progress_percent)
+            self.state.training_loss = loss
+            ctf, otf, gof = self._build_network_transfer_functions(
+                self._ref_volume_data, snapshot_lut_in_state=True
+            )
+            self._ref_volume.property.SetColor(ctf)
+            self._ref_volume.property.SetScalarOpacity(otf)
+            self._ref_volume.property.SetGradientOpacity(gof)
+            self._ref_html_view.update()
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    def _check_all_loaded(self) -> None:
+        ok = (
+            self._seg_volume_data is not None
+            and self._ref_volume_data is not None
+            and self._gt_ctf.size > 0
+            and self._gt_sof.size > 0
+            and self._gt_gof.size > 0
+        )
+        self.logger.debug("_check_all_loaded:ok= %d", ok)
+        self.state.allow_transfer = ok
+
+    def _initialize_transfer_functions(
+        self,
+        colors: npt.NDArray[np.float64],
+        scalar_opacities: npt.NDArray[np.float64],
+        gradient_opacities: npt.NDArray[np.float64],
+    ):
+        self._gt_ctf.AddRGBPoints(
+            numpy_to_vtk(colors[:, 0], deep=1),
+            numpy_to_vtk(colors[:, 1:], deep=1),
+        )
+        self._gt_ctf.Build()
+
+        for scalar, alpha in scalar_opacities:
+            self._gt_sof.AddPoint(scalar, alpha)
+
+        for gradient, alpha in gradient_opacities:
+            self._gt_gof.AddPoint(gradient, alpha)
+
+        # Set state
+        self.state.seg_opacities = scalar_opacities.tolist()
+        self.state.seg_colors = [(v, (r, g, b)) for (v, r, g, b) in colors.tolist()]
+        self.state.seg_scalar_range = (
+            float(colors[:, 0].min()),
+            float(colors[:, 0].max()),
+        )
+
+    def _apply_gt_tf_to_segmentation_volume(self) -> None:
+        self._seg_volume.property.SetColor(self._gt_ctf)
+        self._seg_volume.property.SetScalarOpacity(self._gt_sof)
+        self._seg_volume.property.SetGradientOpacity(self._gt_gof)
+
+    def _map_ground_truth_lut_to_ref_volume_scalars(
+        self, volume: vtkImageData, snapshot_lut_in_state=False
+    ) -> tuple:
+        ref_scalar_range = volume.scalar_range
+        ref_scalar_span = ref_scalar_range[1] - ref_scalar_range[0]
+        seg_scalar_range = self._seg_volume_data.scalar_range
+        seg_scalar_span = seg_scalar_range[1] - seg_scalar_range[0]
+
+        seg_grad_mag_max = compute_gradient_magnitude(
+            vtk_image_to_numpy(self._seg_volume_data), self._seg_volume_data.spacing
+        ).max()
+        ref_grad_mag_max = compute_gradient_magnitude(
+            vtk_image_to_numpy(volume), volume.spacing
+        ).max()
+        new_rgb = self.ground_truth_colors.copy()
+        new_alpha = self.ground_truth_opacities.copy()
+        new_grad_alpha = self.ground_truth_gradient_opacities.copy()
+        new_rgb[:, 0] -= seg_scalar_range[0]
+        new_rgb[:, 0] /= seg_scalar_span
+        new_rgb[:, 0] *= ref_scalar_span
+        new_rgb[:, 0] += ref_scalar_range[0]
+        new_alpha[:, 0] -= seg_scalar_range[0]
+        new_alpha[:, 0] /= seg_scalar_span
+        new_alpha[:, 0] *= ref_scalar_span
+        new_alpha[:, 0] += ref_scalar_range[0]
+        new_grad_alpha[:, 0] *= ref_grad_mag_max / seg_grad_mag_max
+
+        if snapshot_lut_in_state:
+            (
+                self.state.ref_colors,
+                self.state.ref_opacities,
+                self.state.ref_gradient_opacities,
+            ) = convert_lut_to_state_format(new_rgb, new_alpha, new_grad_alpha)
+            self.state.ref_scalar_range = list(volume.scalar_range)
+        ctf = vtkDiscretizableColorTransferFunction(allow_duplicate_scalars=True)
+        ctf.AddRGBPoints(
+            numpy_to_vtk(new_rgb[:, 0], deep=1),
+            numpy_to_vtk(new_rgb[:, 1:], deep=1),
+        )
+        ctf.Build()
+
+        otf = vtkPiecewiseFunction()
+        for scalar, alpha in new_alpha:
+            otf.AddPoint(float(scalar), float(alpha))
+
+        gof = vtkPiecewiseFunction()
+        for gradient, new_alpha in new_grad_alpha:
+            gof.AddPoint(float(gradient), float(new_alpha))
+        return ctf, otf, gof
+
+    def _build_network_transfer_functions(
+        self, volume: vtkImageData, snapshot_lut_in_state=False
+    ) -> tuple:
+        """Build VTK CTF/OTF from 64 network samples."""
+        colors, opacities, gradient_opacities = lut_from_network(
+            self._model, volume, n_points=self.state.n_lut_sampling_points
+        )
+        if snapshot_lut_in_state:
+            self.state.ref_colors = colors
+            self.state.ref_opacities = opacities
+            self.state.ref_gradient_opacities = gradient_opacities
+            self.state.ref_scalar_range = list(volume.scalar_range)
+
+        scalars_np = np.array([s for s, _ in colors], dtype=np.float64)
+        rgb_np = np.array([list(rgb) for _, rgb in colors], dtype=np.float64)
+
+        ctf = vtkDiscretizableColorTransferFunction(allow_duplicate_scalars=True)
+        ctf.AddRGBPoints(
+            numpy_to_vtk(scalars_np.copy(), deep=1),
+            numpy_to_vtk(rgb_np.copy(), deep=1),
+        )
+        ctf.Build()
+
+        otf = vtkPiecewiseFunction()
+        for scalar, alpha in opacities:
+            otf.AddPoint(float(scalar), float(alpha))
+
+        gof = vtkPiecewiseFunction()
+        for gradient, alpha in gradient_opacities:
+            gof.AddPoint(float(gradient), float(alpha))
+
+        return ctf, otf, gof
+
+    def _setup_vtk_pipeline(self):
+        window = vtkRenderWindow(interactor=vtkRenderWindowInteractor())
+        window.interactor.interactor_style.SetCurrentStyleToTrackballCamera()
+        renderer = vtkRenderer(background=(0.2, 0.2, 0.2))
+        window.AddRenderer(renderer)
+
+        mapper = vtkSmartVolumeMapper()
+        mapper.SetBlendModeToComposite()
+
+        volume_actor = vtkVolume()
+        volume_actor.mapper = mapper
+
+        volume_property = vtkVolumeProperty()
+        volume_actor.SetProperty(volume_property)
+        volume_property.ShadeOff()
+        volume_property.SetScalarOpacityUnitDistance(1.754420659713536)
+        volume_property.SetScatteringAnisotropy(0)
+
+        return window, renderer, volume_actor
+
+    # ------------------------------------------------------------------
+    # Editor node callbacks (stubs)
+    # ------------------------------------------------------------------
+
+    def on_opacity_node_modified(self, _index, _node):
+        self.logger.debug("Opacity node %d modified to %s", _index, str(_node))
+        self._gt_sof.SetNodeValue(_index, [*_node, 0.5, 0.0])
+        self._seg_html_view.update()
+        self.state.allow_transfer = True
+
+    def on_opacity_node_added(self, _index, _node):
+        pass
+
+    def on_opacity_node_removed(self, _index):
+        pass
+
+    def on_color_node_modified(self, _index, _node):
+        self.logger.debug("Color node %d modified to %s", _index, str(_node))
+        self._gt_ctf.SetNodeValue(_index, [_node[0], *_node[1], 0.5, 0.0])
+        self._seg_html_view.update()
+        self.state.allow_transfer = True
+
+    def on_color_node_added(self, _index, _node):
+        pass
+
+    def on_color_node_removed(self, _index):
+        pass
+
+    # ------------------------------------------------------------------
+    # Pages
+    # ------------------------------------------------------------------
+
+    def _seg_color_opacity_editor(self):
+        return color_opacity_editor.ColorOpacityEditor(
+            classes="align-center",
+            v_if=("transfer_function_file.length > 0",),
+            style="width: 100%; max-height: 150px;",
+            v_model_colorNodes="seg_colors",
+            v_model_opacityNodes=("seg_opacities",),
+            scalar_range=("seg_scalar_range",),
+            opacity_node_modified=(self.on_opacity_node_modified, "$event"),
+            opacity_node_added=(self.on_opacity_node_added, "$event"),
+            opacity_node_removed=(self.on_opacity_node_removed, "[$event]"),
+            color_node_modified=(self.on_color_node_modified, "$event"),
+            color_node_added=(self.on_color_node_added, "$event"),
+            color_node_removed=(self.on_color_node_removed, "[$event]"),
+            histograms=("seg_histograms",),
+            histograms_range=("seg_hist_y_range",),
+            show_histograms=("show_histograms",),
+            histograms_color=("histograms_color", [0, 0, 0, 0.25]),
+            background_shape=("background_shape",),
+            background_opacity=("background_opacity",),
+            handle_radius=7,
+            line_width=2,
+            viewport_padding=("viewport_padding", [8, 8]),
+            handle_color=("handle_color", [0.125, 0.125, 0.125, 1]),
+            handle_border_color=("handle_border_color", [0.75, 0.75, 0.75, 1]),
+        )
+
+    def _ref_color_opacity_editor(self):
+        return color_opacity_editor.ColorOpacityEditor(
+            classes="align-center",
+            style="width: 100%; max-height: 150px;",
+            v_model_colorNodes="ref_colors",
+            v_model_opacityNodes=("ref_opacities",),
+            scalar_range=("ref_scalar_range",),
+            opacity_node_modified=(lambda _, __: None, "$event"),
+            opacity_node_added=(lambda _, __: None, "$event"),
+            opacity_node_removed=(lambda _: None, "[$event]"),
+            color_node_modified=(lambda _, __: None, "$event"),
+            color_node_added=(lambda _, __: None, "$event"),
+            color_node_removed=(lambda _: None, "[$event]"),
+            histograms=("ref_histograms",),
+            histograms_range=("ref_hist_y_range",),
+            show_histograms=("show_histograms",),
+            histograms_color=("histograms_color", [0, 0, 0, 0.25]),
+            background_shape=("background_shape",),
+            background_opacity=("background_opacity",),
+            handle_radius=7,
+            line_width=2,
+            viewport_padding=("viewport_padding", [8, 8]),
+            handle_color=("handle_color", [0.125, 0.125, 0.125, 1]),
+            handle_border_color=("handle_border_color", [0.75, 0.75, 0.75, 1]),
+        )
+
+    def _generate_ui(self):
+        self.logger.debug("Show page 1")
+        with SinglePageWithDrawerLayout(self.server) as self.ui:
+            # Permission dialog 1 - model transfer
+            with vuetify3.VDialog(
+                model_value=("show_transfer_dialog",),
+                max_width=440,
+                persistent=True,
+            ):
+                with vuetify3.VCard():
+                    vuetify3.VCardTitle("Transfer transfer function?")
+                    vuetify3.VCardText(
+                        f"The network will transfer the provided lookup tables from the segmentation volume to the scalar volume using {self.state.n_epochs} epochs. Proceed?"
+                    )
+                    with vuetify3.VCardActions():
+                        vuetify3.VSpacer()
+                        vuetify3.VBtn(
+                            "Cancel",
+                            variant="text",
+                            click="show_transfer_dialog = false",
+                        )
+                        vuetify3.VBtn(
+                            "Confirm",
+                            color="primary",
+                            variant="tonal",
+                            click=self.on_confirm_transfer,
+                        )
+
+            # File dialog
+            FileDialog(is_open=False, file_browser=self.file_browser)
+            with self.ui.drawer:
+                with vuetify3.VCard():
+                    vuetify3.VCardTitle("Training")
+                    vuetify3.VNumberInput(
+                        v_model=("n_epochs",),
+                        label="Epochs",
+                        min=(1,),
+                        max=(30,),
+                        step=(1,),
+                        control_variant="split",
+                        classes="mx-2",
+                    )
+                    vuetify3.VNumberInput(
+                        v_model=("n_slices",),
+                        label="Slices",
+                        min=(256,),
+                        max=(4096,),
+                        step=(256,),
+                        control_variant="split",
+                        classes="mx-2",
+                    )
+                    vuetify3.VNumberInput(
+                        v_model=("batch_size",),
+                        label="Batch Size",
+                        control_variant="split",
+                        classes="mx-2",
+                    )
+                    vuetify3.VNumberInput(
+                        v_model=("learning_rate",),
+                        min=(1.0e-5,),
+                        max=(0.1,),
+                        step=(1.0e-6,),
+                        precision=(7,),
+                        label="Learning rate",
+                        control_variant="split",
+                        classes="mx-2",
+                    )
+                with vuetify3.VCard():
+                    vuetify3.VCardTitle("2D Slice plane")
+                    vuetify3.VNumberInput(
+                        v_model=("slice_plane_margin",),
+                        label="Margin",
+                        min=(0.0),
+                        max=(1.0,),
+                        step=(0.05,),
+                        precision=(3,),
+                        control_variant="split",
+                        classes="mx-2",
+                    )
+                with vuetify3.VCard():
+                    vuetify3.VCardTitle("Lookup table")
+                    vuetify3.VNumberInput(
+                        v_model=("n_lut_sampling_points",),
+                        label="No. of sampling points",
+                        min=(8),
+                        max=(64,),
+                        step=(2,),
+                        control_variant="split",
+                        classes="mx-2",
+                    )
+                vuetify3.VSpacer()
+                with vuetify3.VCardActions():
+                    vuetify3.VBtn(
+                        "Reset",
+                        color="primary",
+                        variant="tonal",
+                        click=self._set_default_parameters,
+                    )
+
+            with self.ui.content:
+                with vuetify3.VContainer(
+                    fluid=True,
+                    classes="fill-height d-flex flex-column pa-4",
+                    style="gap: 16px;",
+                ):
+                    # Row - Color-opacity editor
+                    with vuetify3.VRow(
+                        classes="d-flex align-center justify-center flex-grow-0",
+                        style="width: 100%",
+                    ):
+                        with vuetify3.VCol(
+                            cols="12",
+                            md="6",
+                            classes="d-flex flex-column",
+                        ):
+                            with vuetify3.VCard(
+                                variant="outlined",
+                                style="min-height: 150px;",
+                                classes="d-flex flex-column",
+                            ):
+                                with vuetify3.VRow(
+                                    classes="flex-shrink-0 justify-end ma-0",
+                                    v_show=("transfer_function_file.length > 0",),
+                                ):
+                                    vuetify3.VBtn(
+                                        icon="mdi-close",
+                                        size="small",
+                                        density="compact",
+                                        variant="text",
+                                        click=self._unload_transfer_function,
+                                    )
+                                with vuetify3.VRow(
+                                    classes="flex-grow-1 align-center justify-center ma-0",
+                                    v_show=("transfer_function_file.length == 0",),
+                                ):
+                                    vuetify3.VBtn(
+                                        text="1. Load a transfer function file (.vp, .json)",
+                                        click=(
+                                            self.ctrl.open_file_dialog,
+                                            "['transfer_function']",
+                                        ),
+                                    )
+                                self._seg_color_opacity_editor()
+                        with vuetify3.VCol(
+                            cols="12",
+                            md="6",
+                            classes="d-flex flex-column",
+                            v_if=("reference_volume_file.length > 0",),
+                        ):
+                            with vuetify3.VCard(
+                                variant="outlined",
+                                style="min-height: 150px",
+                                classes="d-flex flex-column",
+                            ):
+                                with vuetify3.VRow(
+                                    classes="flex-shrink-0 justify-end ma-0",
+                                ):
+                                    vuetify3.VBtn(
+                                        icon="mdi-download",
+                                        size="small",
+                                        density="compact",
+                                        variant="text",
+                                        click=self.open_export_dialog,
+                                    )
+                                    vuetify3.VBtn(
+                                        icon="mdi-restart",
+                                        size="small",
+                                        density="compact",
+                                        variant="text",
+                                        click=self.reset_reference_lut,
+                                    )
+                                self._ref_color_opacity_editor()
+
+                    # Row — 3D views
+                    with vuetify3.VRow(classes="flex-grow-1", style="width: 100%"):
+                        with vuetify3.VCol(
+                            cols="12",
+                            md="6",
+                            classes="d-flex flex-column",
+                        ):
+                            with vuetify3.VCard(
+                                variant="outlined",
+                                classes="d-flex flex-grow-1 flex-column",
+                            ):
+                                with vuetify3.VRow(
+                                    classes="flex-shrink-0 justify-end ma-0",
+                                    v_show=("segmentation_volume_file.length > 0",),
+                                ):
+                                    vuetify3.VBtn(
+                                        icon="mdi-close",
+                                        size="small",
+                                        density="compact",
+                                        variant="text",
+                                        click=self._unload_segmentation_volume,
+                                    )
+                                with vuetify3.VRow(
+                                    classes="flex-grow-1 align-center justify-center ma-0",
+                                    v_show=("segmentation_volume_file.length === 0",),
+                                ):
+                                    vuetify3.VBtn(
+                                        text="2. Load a segmentation volume (*.nii.gz)",
+                                        click=(
+                                            self.ctrl.open_file_dialog,
+                                            "['segmentation_volume']",
+                                        ),
+                                    )
+                                self._seg_html_view = vtklocal.LocalView(
+                                    self._seg_wnd,
+                                    # interactive_ratio=1,
+                                    style="width: 100%; min-height: 0;",
+                                    v_show=("segmentation_volume_file.length > 0",),
+                                )
+                        with vuetify3.VCol(
+                            cols="12",
+                            md="6",
+                            classes="d-flex flex-column",
+                        ):
+                            with vuetify3.VCard(
+                                variant="outlined",
+                                classes="d-flex flex-grow-1 flex-column",
+                            ):
+                                with vuetify3.VRow(
+                                    classes="flex-shrink-0 justify-end ma-0",
+                                    v_show=("reference_volume_file.length > 0",),
+                                ):
+                                    with vuetify3.VCard(
+                                        variant="outlined",
+                                        classes="d-flex flex-grow-1",
+                                    ):
+                                        with vuetify3.VBtnToggle(
+                                            v_model=("reference_lut_source",),
+                                            mandatory=True,
+                                            rounded=True,
+                                            border=True,
+                                        ):
+                                            vuetify3.VBtn("Neural network", value="nn")
+                                            vuetify3.VBtn(
+                                                "Linear map", value="linear_map"
+                                            )
+                                    vuetify3.VBtn(
+                                        icon="mdi-close",
+                                        size="small",
+                                        density="compact",
+                                        variant="text",
+                                        click=self._unload_reference_volume,
+                                    )
+                                with vuetify3.VRow(
+                                    classes="flex-grow-1 align-center justify-center ma-0",
+                                    v_show=("reference_volume_file.length === 0",),
+                                ):
+                                    vuetify3.VBtn(
+                                        text="3. Load the volume with continuous scalar intensities (*.nii.gz)",
+                                        click=(
+                                            self.ctrl.open_file_dialog,
+                                            "['reference_volume']",
+                                        ),
+                                    )
+                                self._ref_html_view = vtklocal.LocalView(
+                                    self._ref_wnd,
+                                    # interactive_ratio=1,
+                                    style="width: 100%; min-height: 0;",
+                                    v_show=("reference_volume_file.length > 0",),
+                                )
+
+                    # Row — actions
+                    with vuetify3.VRow(classes="flex-grow-0", style="width: 100%"):
+                        with vuetify3.VCol(cols="12"):
+                            with vuetify3.VCardActions():
+                                vuetify3.VSpacer()
+                                vuetify3.VBtn(
+                                    "Transfer",
+                                    color="primary",
+                                    variant="tonal",
+                                    click=self.on_open_transfer_dialog,
+                                    disabled=("!allow_transfer",),
+                                )
+                            vuetify3.VProgressLinear(
+                                model_value=("progress_percent",),
+                                v_if=("progress_percent > 0 && progress_percent < 100"),
+                                color="primary",
+                                height=8,
+                                rounded=True,
+                            )
