@@ -6,6 +6,7 @@ import logging
 import os
 import pathlib
 import time
+from typing import ClassVar
 
 import numpy as np
 import numpy.typing as npt
@@ -18,7 +19,11 @@ from trame.ui.vuetify3 import SinglePageWithDrawerLayout
 from trame.widgets import color_opacity_editor, vtklocal, vuetify3
 from vtkmodules.util.numpy_support import numpy_to_vtk
 from vtkmodules.vtkCommonCore import VTK_DOUBLE
-from vtkmodules.vtkCommonDataModel import vtkImageData, vtkPiecewiseFunction
+from vtkmodules.vtkCommonDataModel import (
+    vtkImageData,
+    vtkPiecewiseFunction,
+    vtkPlane,
+)
 from vtkmodules.vtkFiltersCore import vtkArrayCalculator
 from vtkmodules.vtkIOImage import vtkNIFTIImageReader
 from vtkmodules.vtkRenderingCore import (
@@ -59,6 +64,35 @@ class App(TrameApp):
     logger = logging.getLogger("color_transfer_function_designer.app.core.TrainingApp")
     install_handlers(logger)
 
+    # Slice/crop plane: maps a toolbar direction to the clipping-plane normal.
+    # A volume mapper keeps the half-space the normal points toward and crops
+    # the other side, so e.g. cropping the "+x" half (keeping "-x") needs a
+    # normal pointing toward -x. See _refresh_slice().
+    _SLICE_NORMALS: ClassVar[dict[str, tuple[float, float, float]]] = {
+        "+x": (-1.0, 0.0, 0.0),
+        "-x": (1.0, 0.0, 0.0),
+        "+y": (0.0, -1.0, 0.0),
+        "-y": (0.0, 1.0, 0.0),
+        "+z": (0.0, 0.0, -1.0),
+        "-z": (0.0, 0.0, 1.0),
+    }
+    _SLICE_AXIS: ClassVar[dict[str, int]] = {
+        "+x": 0,
+        "-x": 0,
+        "+y": 1,
+        "-y": 1,
+        "+z": 2,
+        "-z": 2,
+    }
+    _SLICE_DIRECTIONS = (
+        ("+X", "+x"),
+        ("-X", "-x"),
+        ("+Y", "+y"),
+        ("-Y", "-y"),
+        ("+Z", "+z"),
+        ("-Z", "-z"),
+    )
+
     def __init__(
         self,
         data_directory,
@@ -90,8 +124,18 @@ class App(TrameApp):
         # VTK.wasm views
         self._ref_html_view = None
         self._seg_html_view = None
-        self._ref_wnd, self._ref_renderer, self._ref_volume = self._setup_vtk_pipeline()
-        self._seg_wnd, self._seg_renderer, self._seg_volume = self._setup_vtk_pipeline()
+        (
+            self._ref_wnd,
+            self._ref_renderer,
+            self._ref_volume,
+            self._ref_plane,
+        ) = self._setup_vtk_pipeline()
+        (
+            self._seg_wnd,
+            self._seg_renderer,
+            self._seg_volume,
+            self._seg_plane,
+        ) = self._setup_vtk_pipeline()
 
         # Ground-truth transfer function data (in segmentation scalar range)
         self._gt_ctf = vtkDiscretizableColorTransferFunction(
@@ -132,6 +176,20 @@ class App(TrameApp):
 
         # Dialog visibility
         self.state.show_transfer_dialog = False
+
+        # Slice/crop plane state (per view). Position is a percentage [0, 100]
+        # along the active axis so it stays valid when the direction changes.
+        for key in ("seg", "ref"):
+            setattr(self.state, f"{key}_slice_enabled", False)
+            setattr(self.state, f"{key}_slice_direction", "+x")
+            setattr(self.state, f"{key}_slice_position", 50)
+
+        # When linked, the slice plane / camera of one view drives the other.
+        self.state.slice_linked = False
+        self.state.camera_linked = False
+        # Monotonic deadlines used to ignore the camera echo produced by our own
+        # push when mirroring a camera, preventing a sync feedback loop.
+        self._camera_sync_mute = {"seg": 0.0, "ref": 0.0}
 
         self._generate_ui()
 
@@ -179,6 +237,30 @@ class App(TrameApp):
             self._ref_html_view.update()
         else:
             self.logger.error("Unknown reference_lut_source!")
+
+    @change("seg_slice_enabled", "seg_slice_direction", "seg_slice_position")
+    def on_seg_slice_change(self, **_):
+        if self.state.slice_linked:
+            self._mirror_slice_state("seg", "ref")
+        self._refresh_slice("seg")
+
+    @change("ref_slice_enabled", "ref_slice_direction", "ref_slice_position")
+    def on_ref_slice_change(self, **_):
+        if self.state.slice_linked:
+            self._mirror_slice_state("ref", "seg")
+        self._refresh_slice("ref")
+
+    @change("slice_linked")
+    def on_slice_linked_change(self, slice_linked, **_):
+        # On linking, make the reference view adopt the segmentation slice plane.
+        if slice_linked:
+            self._mirror_slice_state("seg", "ref")
+
+    @change("camera_linked")
+    def on_camera_linked_change(self, camera_linked, **_):
+        # On linking, make the reference view adopt the segmentation camera.
+        if camera_linked:
+            self._sync_camera_to("seg", "ref")
 
     # ------------------------------------------------------------------
     # Properties
@@ -339,11 +421,14 @@ class App(TrameApp):
         self._check_all_loaded()
         self._seg_renderer.ResetCamera()
         self._seg_html_view.update(push_camera=True)
+        self._refresh_slice("seg")
 
     def _unload_segmentation_volume(self):
         # Reset state
         self.state.segmentation_volume_file = ""
+        self.state.seg_slice_enabled = False
         # Reset renderer
+        self._seg_volume.mapper.RemoveAllClippingPlanes()
         self._seg_renderer.RemoveAllViewProps()
         self._seg_volume_data = None
         self._seg_html_view.update()
@@ -399,6 +484,7 @@ class App(TrameApp):
         self._check_all_loaded()
         self._ref_renderer.ResetCamera()
         self._ref_html_view.update(push_camera=True)
+        self._refresh_slice("ref")
 
     def _unload_reference_volume(self):
         # Reset state
@@ -407,7 +493,9 @@ class App(TrameApp):
         self.state.ref_opacities = []
         self.state.ref_gradient_opacities = []
         self.state.ref_scalar_range = []
+        self.state.ref_slice_enabled = False
         # Reset renderer
+        self._ref_volume.mapper.RemoveAllClippingPlanes()
         self._ref_renderer.RemoveAllViewProps()
         self._ref_volume_data = None
         self._ref_html_view.update()
@@ -732,7 +820,147 @@ class App(TrameApp):
         volume_property.SetScalarOpacityUnitDistance(1.754420659713536)
         volume_property.SetScatteringAnisotropy(0)
 
-        return window, renderer, volume_actor
+        # Slice/crop plane. Attached to the mapper on demand by _refresh_slice().
+        slice_plane = vtkPlane()
+
+        return window, renderer, volume_actor, slice_plane
+
+    # ------------------------------------------------------------------
+    # Slice / crop plane
+    # ------------------------------------------------------------------
+
+    def _slice_targets(self, key: str):
+        """Return (volume_data, volume_actor, slice_plane, html_view) for a view."""
+        if key == "seg":
+            return (
+                self._seg_volume_data,
+                self._seg_volume,
+                self._seg_plane,
+                self._seg_html_view,
+            )
+        return (
+            self._ref_volume_data,
+            self._ref_volume,
+            self._ref_plane,
+            self._ref_html_view,
+        )
+
+    def _refresh_slice(self, key: str) -> None:
+        """Sync a view's clipping plane to the current slice toolbar state.
+
+        The plane is axis-aligned along the selected direction. The mapper keeps
+        the side the normal points toward, so the configured direction is the
+        cropped half (e.g. "+x" crops voxels on the +x side, keeps the -x side).
+        """
+        volume_data, actor, plane, html_view = self._slice_targets(key)
+        if html_view is None:
+            return
+
+        mapper = actor.mapper
+        mapper.RemoveAllClippingPlanes()
+
+        enabled = getattr(self.state, f"{key}_slice_enabled")
+        if enabled and volume_data is not None:
+            direction = getattr(self.state, f"{key}_slice_direction")
+            percent = float(getattr(self.state, f"{key}_slice_position"))
+            axis = self._SLICE_AXIS[direction]
+            bounds = volume_data.bounds
+            lo, hi = bounds[2 * axis], bounds[2 * axis + 1]
+            origin = [
+                0.5 * (bounds[0] + bounds[1]),
+                0.5 * (bounds[2] + bounds[3]),
+                0.5 * (bounds[4] + bounds[5]),
+            ]
+            origin[axis] = lo + (percent / 100.0) * (hi - lo)
+            plane.SetOrigin(*origin)
+            plane.SetNormal(*self._SLICE_NORMALS[direction])
+            mapper.AddClippingPlane(plane)
+
+        html_view.update()
+
+    def _mirror_slice_state(self, src: str, dst: str) -> None:
+        """Copy the slice toolbar state of one view onto the other.
+
+        Setting the destination state variables triggers that view's own change
+        handler, which refreshes its clipping plane. trame skips unchanged values
+        so mirroring back from the destination is a no-op (no feedback loop).
+        """
+        for prop in ("enabled", "direction", "position"):
+            setattr(
+                self.state,
+                f"{dst}_slice_{prop}",
+                getattr(self.state, f"{src}_slice_{prop}"),
+            )
+
+    # ------------------------------------------------------------------
+    # Linked cameras
+    # ------------------------------------------------------------------
+
+    _CAMERA_ECHO_MUTE_S = 0.2
+
+    @staticmethod
+    def _apply_camera_state(camera, state: dict) -> None:
+        """Apply a serialized vtkCamera state (from the client) onto a camera."""
+        if "Position" not in state:
+            return
+        camera.SetPosition(*state["Position"])
+        camera.SetFocalPoint(*state["FocalPoint"])
+        camera.SetViewUp(*state["ViewUp"])
+        camera.SetViewAngle(state["ViewAngle"])
+        camera.SetParallelScale(state["ParallelScale"])
+        camera.SetParallelProjection(state["ParallelProjection"])
+
+    @staticmethod
+    def _copy_camera(src, dst) -> None:
+        """Copy orientation/zoom from one camera to another (clipping excluded)."""
+        dst.SetPosition(src.GetPosition())
+        dst.SetFocalPoint(src.GetFocalPoint())
+        dst.SetViewUp(src.GetViewUp())
+        dst.SetViewAngle(src.GetViewAngle())
+        dst.SetParallelScale(src.GetParallelScale())
+        dst.SetParallelProjection(src.GetParallelProjection())
+
+    def _camera_view(self, key: str):
+        """Return (renderer, html_view) for a view key."""
+        if key == "seg":
+            return self._seg_renderer, self._seg_html_view
+        return self._ref_renderer, self._ref_html_view
+
+    def _sync_camera_to(self, src: str, dst: str) -> None:
+        """Mirror the src view's camera onto the dst view and push the update."""
+        src_renderer, _ = self._camera_view(src)
+        dst_renderer, dst_view = self._camera_view(dst)
+        if dst_view is None:
+            return
+        self._copy_camera(
+            src_renderer.GetActiveCamera(), dst_renderer.GetActiveCamera()
+        )
+        # Each volume has its own bounds, so refit the near/far planes locally.
+        dst_renderer.ResetCameraClippingRange()
+        self._camera_sync_mute[dst] = time.monotonic() + self._CAMERA_ECHO_MUTE_S
+        dst_renderer.render_window.Render()
+        dst_view.update(push_camera=True)
+
+    def _on_camera_event(self, key: str, camera_state: dict) -> None:
+        """Handle a client-side camera change for a view.
+
+        The server-side camera is always kept in sync with its client so that
+        enabling the link later mirrors the correct view. When linked, the change
+        is forwarded to the other view unless it is the echo of our own push.
+        """
+        renderer, _ = self._camera_view(key)
+        self._apply_camera_state(renderer.GetActiveCamera(), camera_state)
+        if not self.state.camera_linked:
+            return
+        if time.monotonic() < self._camera_sync_mute[key]:
+            return
+        self._sync_camera_to(key, "ref" if key == "seg" else "seg")
+
+    def on_seg_camera_changed(self, camera_state):
+        self._on_camera_event("seg", camera_state)
+
+    def on_ref_camera_changed(self, camera_state):
+        self._on_camera_event("ref", camera_state)
 
     # ------------------------------------------------------------------
     # Editor node callbacks (stubs)
@@ -818,6 +1046,85 @@ class App(TrameApp):
             handle_color=("handle_color", [0.125, 0.125, 0.125, 1]),
             handle_border_color=("handle_border_color", [0.75, 0.75, 0.75, 1]),
         )
+
+    def _slice_plane_toolbar(self, key: str, volume_state: str):
+        """Toolbar to enable/orient/position the slice-crop plane for a view.
+
+        Shared by both LocalViews; ``key`` is "seg" or "ref" and ``volume_state``
+        is the state variable holding that view's loaded file path.
+        """
+        enabled = f"{key}_slice_enabled"
+        direction = f"{key}_slice_direction"
+        position = f"{key}_slice_position"
+        with vuetify3.VToolbar(
+            density="compact",
+            color="transparent",
+            flat=True,
+            v_show=(f"{volume_state}.length > 0",),
+        ):
+            # Link toggles shared by both views: mirror the slice plane / camera.
+            with vuetify3.VBtn(
+                size="small",
+                prepend_icon=(
+                    "slice_linked ? 'mdi-link-variant' : 'mdi-link-variant-off'",
+                ),
+                density="compact",
+                variant=("slice_linked ? 'tonal' : 'text'",),
+                color=("slice_linked ? 'primary' : ''",),
+                click="slice_linked = !slice_linked",
+                classes="ml-2",
+            ):
+                vuetify3.VTooltip(
+                    "Link crop plane across both views",
+                    activator="parent",
+                    location="bottom",
+                )
+            with vuetify3.VBtn(
+                size="small",
+                prepend_icon=("camera_linked ? 'mdi-link' : 'mdi-link-off'",),
+                density="compact",
+                variant=("camera_linked ? 'tonal' : 'text'",),
+                color=("camera_linked ? 'primary' : ''",),
+                click="camera_linked = !camera_linked",
+            ):
+                vuetify3.VTooltip(
+                    "Link camera across both views",
+                    activator="parent",
+                    location="bottom",
+                )
+            vuetify3.VDivider(vertical=True, classes="mx-2")
+            vuetify3.VSwitch(
+                v_model=(enabled,),
+                label="Crop",
+                color="primary",
+                density="compact",
+                hide_details=True,
+                inset=True,
+                classes="flex-grow-0 mx-2",
+            )
+            with vuetify3.VBtnToggle(
+                v_model=(direction,),
+                mandatory=True,
+                density="compact",
+                variant="outlined",
+                divided=True,
+                disabled=(f"!{enabled}",),
+                classes="mx-2",
+            ):
+                for label, value in self._SLICE_DIRECTIONS:
+                    vuetify3.VBtn(label, value=value, size="small")
+            vuetify3.VSlider(
+                v_model=(position,),
+                min=0,
+                max=100,
+                step=1,
+                prepend_icon="mdi-arrow-split-vertical",
+                thumb_label=True,
+                hide_details=True,
+                density="compact",
+                disabled=(f"!{enabled}",),
+                classes="mx-2",
+            )
 
     def _generate_ui(self):
         self.logger.debug("Show page 1")
@@ -1025,11 +1332,15 @@ class App(TrameApp):
                                             "['segmentation_volume']",
                                         ),
                                     )
+                                self._slice_plane_toolbar(
+                                    "seg", "segmentation_volume_file"
+                                )
                                 self._seg_html_view = vtklocal.LocalView(
                                     self._seg_wnd,
                                     # interactive_ratio=1,
                                     style="width: 100%; min-height: 0;",
                                     v_show=("segmentation_volume_file.length > 0",),
+                                    camera=(self.on_seg_camera_changed, "[$event]"),
                                 )
                         with vuetify3.VCol(
                             cols="12",
@@ -1044,20 +1355,6 @@ class App(TrameApp):
                                     classes="flex-shrink-0 justify-end ma-0",
                                     v_show=("reference_volume_file.length > 0",),
                                 ):
-                                    with vuetify3.VCard(
-                                        variant="outlined",
-                                        classes="d-flex flex-grow-1",
-                                    ):
-                                        with vuetify3.VBtnToggle(
-                                            v_model=("reference_lut_source",),
-                                            mandatory=True,
-                                            rounded=True,
-                                            border=True,
-                                        ):
-                                            vuetify3.VBtn("Neural network", value="nn")
-                                            vuetify3.VBtn(
-                                                "Linear map", value="linear_map"
-                                            )
                                     vuetify3.VBtn(
                                         icon="mdi-close",
                                         size="small",
@@ -1076,11 +1373,15 @@ class App(TrameApp):
                                             "['reference_volume']",
                                         ),
                                     )
+                                self._slice_plane_toolbar(
+                                    "ref", "reference_volume_file"
+                                )
                                 self._ref_html_view = vtklocal.LocalView(
                                     self._ref_wnd,
                                     # interactive_ratio=1,
                                     style="width: 100%; min-height: 0;",
                                     v_show=("reference_volume_file.length > 0",),
+                                    camera=(self.on_ref_camera_changed, "[$event]"),
                                 )
 
                     # Row — actions
@@ -1088,6 +1389,18 @@ class App(TrameApp):
                         with vuetify3.VCol(cols="12"):
                             with vuetify3.VCardActions():
                                 vuetify3.VSpacer()
+                                with vuetify3.VCard(
+                                    variant="tonal",
+                                    classes="d-flex",
+                                ):
+                                    with vuetify3.VBtnToggle(
+                                        v_model=("reference_lut_source",),
+                                        mandatory=True,
+                                        rounded=True,
+                                        border=True,
+                                    ):
+                                        vuetify3.VBtn("Neural network", value="nn")
+                                        vuetify3.VBtn("Linear map", value="linear_map")
                                 vuetify3.VBtn(
                                     "Transfer",
                                     color="primary",
