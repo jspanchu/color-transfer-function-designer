@@ -16,7 +16,7 @@ import vtkmodules.vtkRenderingOpenGL2  # noqa: F401
 from trame.app import TrameApp, asynchronous
 from trame.decorators import change, controller
 from trame.ui.vuetify3 import SinglePageWithDrawerLayout
-from trame.widgets import color_opacity_editor, vtklocal, vuetify3
+from trame.widgets import client, color_opacity_editor, vtklocal, vuetify3
 from vtkmodules.util.numpy_support import numpy_to_vtk
 from vtkmodules.vtkCommonCore import VTK_DOUBLE
 from vtkmodules.vtkCommonDataModel import (
@@ -58,6 +58,74 @@ from color_transfer_function_designer.app.utils import (
 )
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+# Client-side camera sync between the two LocalView Wasm scenes. Registered via
+# client.Script and driven from the server with the JSEval controllers
+# `camera_sync_init` (wire up observers once both scenes are ready) and
+# `camera_sync_once` (snap the reference view onto the segmentation view when
+# the link is enabled). All synchronization happens in the browser; the server
+# only forwards the renderer wasm ids and the view ref names.
+CAMERA_SYNC_JS = """
+let cameraSyncInitialized = false;
+let suppressCameraSync = false;
+let segCam = null;
+let refCam = null;
+let segRdr = null;
+let refRdr = null;
+let segRefName = null;
+let refRefName = null;
+
+// Copy the active-camera view params from src to dst, refit the dst clipping
+// range (the two volumes have different bounds) and redraw the dst view. The
+// suppress flag swallows the dst ModifiedEvent fired during set()/clipping so
+// the mirror does not echo back into an infinite loop.
+async function copyCamera(srcCam, dstCam, dstRdr, dstRefName) {
+  if (suppressCameraSync) return;
+  if (!window.trame.state.get("camera_linked")) return;
+  suppressCameraSync = true;
+  try {
+    await dstCam.setPosition(srcCam.position);
+    await dstCam.setFocalPoint(srcCam.focalPoint);
+    await dstCam.setViewUp(srcCam.viewUp);
+    await dstCam.setViewAngle(srcCam.viewAngle);
+    await dstCam.setParallelScale(srcCam.parallelScale);
+    await dstCam.setParallelProjection(srcCam.parallelProjection);
+    await dstRdr.resetCameraClippingRange();
+  } finally {
+    suppressCameraSync = false;
+  }
+  // Redraw the destination view client-side.
+  window.trame.refs[dstRefName].render();
+}
+
+function triggerCameraSync() {
+  // One-time snap of the reference view onto the segmentation view on link.
+  if (!cameraSyncInitialized) return;
+  copyCamera(segCam, refCam, refRdr, refRefName);
+}
+
+async function setupCameraSync(refSeg, refRef, segRendererId, refRendererId) {
+  if (cameraSyncInitialized) return;
+  const segView = window.trame.refs[refSeg];
+  const refView = window.trame.refs[refRef];
+  if (!segView || !refView) return;  // a view not mounted yet -> retry on next `updated`
+
+  segRdr = segView.getVtkObject(segRendererId);
+  refRdr = refView.getVtkObject(refRendererId);
+  if (!segRdr || !refRdr) {console.error("Scene not synced yet"); return;}  // scene not synced yet -> retry
+
+  segCam = await segRdr.getActiveCamera();
+  refCam = await refRdr.getActiveCamera();
+  if (!segCam || !refCam) return;
+
+  segRefName = refSeg;
+  refRefName = refRef;
+  cameraSyncInitialized = true;  // only after every handle resolved
+
+  segCam.observe("ModifiedEvent", () => copyCamera(segCam, refCam, refRdr, refRefName));
+  refCam.observe("ModifiedEvent", () => copyCamera(refCam, segCam, segRdr, segRefName));
+}
+"""
 
 
 class App(TrameApp):
@@ -185,11 +253,13 @@ class App(TrameApp):
             setattr(self.state, f"{key}_slice_position", 50)
 
         # When linked, the slice plane / camera of one view drives the other.
+        # Camera sync runs entirely client-side (see CAMERA_SYNC_JS); these wasm
+        # ids let the client resolve each view's renderer/active camera. They are
+        # populated when the LocalViews are created in _generate_ui().
         self.state.slice_linked = False
         self.state.camera_linked = False
-        # Monotonic deadlines used to ignore the camera echo produced by our own
-        # push when mirroring a camera, preventing a sync feedback loop.
-        self._camera_sync_mute = {"seg": 0.0, "ref": 0.0}
+        self._seg_renderer_wasm_id = None
+        self._ref_renderer_wasm_id = None
 
         self._generate_ui()
 
@@ -258,9 +328,10 @@ class App(TrameApp):
 
     @change("camera_linked")
     def on_camera_linked_change(self, camera_linked, **_):
-        # On linking, make the reference view adopt the segmentation camera.
+        # On linking, snap the reference view onto the segmentation camera. The
+        # sync itself runs client-side; see CAMERA_SYNC_JS / triggerCameraSync.
         if camera_linked:
-            self._sync_camera_to("seg", "ref")
+            self.ctrl.camera_sync_once()
 
     # ------------------------------------------------------------------
     # Properties
@@ -893,74 +964,26 @@ class App(TrameApp):
             )
 
     # ------------------------------------------------------------------
-    # Linked cameras
+    # Linked cameras (client-side sync)
     # ------------------------------------------------------------------
 
-    _CAMERA_ECHO_MUTE_S = 0.2
+    def _init_camera_sync(self, **_):
+        """Hand the renderer wasm ids to the client once both views are ready.
 
-    @staticmethod
-    def _apply_camera_state(camera, state: dict) -> None:
-        """Apply a serialized vtkCamera state (from the client) onto a camera."""
-        if "Position" not in state:
-            return
-        camera.SetPosition(*state["Position"])
-        camera.SetFocalPoint(*state["FocalPoint"])
-        camera.SetViewUp(*state["ViewUp"])
-        camera.SetViewAngle(state["ViewAngle"])
-        camera.SetParallelScale(state["ParallelScale"])
-        camera.SetParallelProjection(state["ParallelProjection"])
-
-    @staticmethod
-    def _copy_camera(src, dst) -> None:
-        """Copy orientation/zoom from one camera to another (clipping excluded)."""
-        dst.SetPosition(src.GetPosition())
-        dst.SetFocalPoint(src.GetFocalPoint())
-        dst.SetViewUp(src.GetViewUp())
-        dst.SetViewAngle(src.GetViewAngle())
-        dst.SetParallelScale(src.GetParallelScale())
-        dst.SetParallelProjection(src.GetParallelProjection())
-
-    def _camera_view(self, key: str):
-        """Return (renderer, html_view) for a view key."""
-        if key == "seg":
-            return self._seg_renderer, self._seg_html_view
-        return self._ref_renderer, self._ref_html_view
-
-    def _sync_camera_to(self, src: str, dst: str) -> None:
-        """Mirror the src view's camera onto the dst view and push the update."""
-        src_renderer, _ = self._camera_view(src)
-        dst_renderer, dst_view = self._camera_view(dst)
-        if dst_view is None:
-            return
-        self._copy_camera(
-            src_renderer.GetActiveCamera(), dst_renderer.GetActiveCamera()
-        )
-        # Each volume has its own bounds, so refit the near/far planes locally.
-        dst_renderer.ResetCameraClippingRange()
-        self._camera_sync_mute[dst] = time.monotonic() + self._CAMERA_ECHO_MUTE_S
-        dst_renderer.render_window.Render()
-        dst_view.update(push_camera=True)
-
-    def _on_camera_event(self, key: str, camera_state: dict) -> None:
-        """Handle a client-side camera change for a view.
-
-        The server-side camera is always kept in sync with its client so that
-        enabling the link later mirrors the correct view. When linked, the change
-        is forwarded to the other view unless it is the echo of our own push.
+        Fires on every LocalView ``updated`` event. The client ``setupCameraSync``
+        is idempotent and bails until both Wasm scenes have synced, so repeated
+        invocations are harmless.
         """
-        renderer, _ = self._camera_view(key)
-        self._apply_camera_state(renderer.GetActiveCamera(), camera_state)
-        if not self.state.camera_linked:
+        if self._seg_renderer_wasm_id is None or self._ref_renderer_wasm_id is None:
             return
-        if time.monotonic() < self._camera_sync_mute[key]:
-            return
-        self._sync_camera_to(key, "ref" if key == "seg" else "seg")
-
-    def on_seg_camera_changed(self, camera_state):
-        self._on_camera_event("seg", camera_state)
-
-    def on_ref_camera_changed(self, camera_state):
-        self._on_camera_event("ref", camera_state)
+        self.ctrl.camera_sync_init(
+            {
+                "refSeg": self._seg_html_view.ref_name,
+                "refRef": self._ref_html_view.ref_name,
+                "segRenderer": self._seg_renderer_wasm_id,
+                "refRenderer": self._ref_renderer_wasm_id,
+            }
+        )
 
     # ------------------------------------------------------------------
     # Editor node callbacks (stubs)
@@ -1156,6 +1179,20 @@ class App(TrameApp):
 
             # File dialog
             FileDialog(is_open=False, file_browser=self.file_browser)
+
+            # Client-side camera sync between the two LocalViews. `camera_sync_init`
+            # wires up the Wasm camera observers (called from each view's `updated`
+            # event); `camera_sync_once` snaps the views together when linking.
+            client.Script(CAMERA_SYNC_JS)
+            self.ctrl.camera_sync_init = client.JSEval(
+                exec="""utils.get('setupCameraSync')(
+  $event.refSeg, $event.refRef, $event.segRenderer, $event.refRenderer
+)""",
+            ).exec
+            self.ctrl.camera_sync_once = client.JSEval(
+                exec="utils.get('triggerCameraSync')()",
+            ).exec
+
             with self.ui.drawer:
                 with vuetify3.VCard():
                     vuetify3.VCardTitle("Training")
@@ -1337,10 +1374,14 @@ class App(TrameApp):
                                 )
                                 self._seg_html_view = vtklocal.LocalView(
                                     self._seg_wnd,
+                                    ref="seg_view",
                                     # interactive_ratio=1,
                                     style="width: 100%; min-height: 0;",
                                     v_show=("segmentation_volume_file.length > 0",),
-                                    camera=(self.on_seg_camera_changed, "[$event]"),
+                                    updated=self._init_camera_sync,
+                                )
+                                self._seg_renderer_wasm_id = (
+                                    self._seg_html_view.get_wasm_id(self._seg_renderer)
                                 )
                         with vuetify3.VCol(
                             cols="12",
@@ -1378,10 +1419,14 @@ class App(TrameApp):
                                 )
                                 self._ref_html_view = vtklocal.LocalView(
                                     self._ref_wnd,
+                                    ref="ref_view",
                                     # interactive_ratio=1,
                                     style="width: 100%; min-height: 0;",
                                     v_show=("reference_volume_file.length > 0",),
-                                    camera=(self.on_ref_camera_changed, "[$event]"),
+                                    updated=self._init_camera_sync,
+                                )
+                                self._ref_renderer_wasm_id = (
+                                    self._ref_html_view.get_wasm_id(self._ref_renderer)
                                 )
 
                     # Row — actions
