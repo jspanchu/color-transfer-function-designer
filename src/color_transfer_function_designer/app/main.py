@@ -15,6 +15,7 @@ async def real_main(server=None):
     if server is None:
         server = get_server(server)
 
+    assert server is not None
     server.cli.add_argument(
         "--data-directory",
         help="Path to show in the file browser by default",

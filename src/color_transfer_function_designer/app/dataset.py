@@ -6,16 +6,18 @@ from vtkmodules.vtkCommonDataModel import vtkImageData
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-def vtk_image_to_numpy(vtk_image) -> np.ndarray:
+def load_vtk_image_to_tensor(vtk_image) -> torch.Tensor:
     """Convert vtkImageData to (nz, ny, nx) float32 array."""
     dims = vtk_image.dimensions  # (nx, ny, nz)
     arr = vtk_to_numpy(vtk_image.point_data.scalars).astype(np.float32)
-    return arr.reshape(dims[2], dims[1], dims[0])  # C-order: x fastest → (nz, ny, nx)
+    return torch.from_numpy(arr).reshape(
+        dims[2], dims[1], dims[0]
+    )  # C-order: x fastest → (nz, ny, nx)
 
 
 def normalize_volume_scalars(
-    scalars: np.ndarray | torch.Tensor,
-) -> np.ndarray | torch.Tensor:
+    scalars: torch.Tensor,
+) -> torch.Tensor:
     """Normalize the volume scalars to [0, 1] range."""
     scalar_min = scalars.min()
     scalar_max = scalars.max()
@@ -23,27 +25,17 @@ def normalize_volume_scalars(
     return (scalars - scalar_min) / scalar_span
 
 
-def compute_gradient_magnitude(scalars, spacing: tuple) -> float:
+def compute_gradient_magnitude(scalars: torch.Tensor, spacing: tuple) -> torch.Tensor:
     """Compute the gradient magnitudes in the volume."""
     assert scalars.ndim == 3
-    if isinstance(scalars, np.ndarray):
-        dz, dy, dx = np.gradient(
-            scalars, spacing[2], spacing[1], spacing[0], edge_order=2
-        )
-        return np.sqrt(dx**2 + dy**2 + dz**2)
-    if isinstance(scalars, torch.Tensor):
-        dz, dy, dx = torch.gradient(
-            scalars, spacing=list(reversed(spacing)), edge_order=2
-        )
-        return torch.sqrt(dx**2 + dy**2 + dz**2)
-    return None
+    dz, dy, dx = torch.gradient(scalars, spacing=list(reversed(spacing)), edge_order=2)
+    return torch.sqrt(dx**2 + dy**2 + dz**2)
 
 
-def extract_2d_slice(volume, axis: int, idx: int):
+def extract_2d_slice(volume: torch.Tensor, axis: int, idx: int) -> torch.Tensor:
     """Extract a 2D slice from (nz, ny, nx) volume perpendicular to `axis` at `idx`."""
-    slices = [slice(None), slice(None), slice(None)]
-    slices[axis] = idx
-    return volume[tuple(slices)]
+    index_tensor = torch.tensor([idx]).to(device=volume.device)
+    return torch.index_select(volume, axis, index_tensor).squeeze(axis)
 
 
 def _interp1d(x: torch.Tensor, xp: torch.Tensor, fp: torch.Tensor) -> torch.Tensor:
@@ -125,16 +117,12 @@ class SharedSlicePlaneDataset(torch.utils.data.Dataset):
             "Size of dimension 2 in image_known_lut != image_unknown_lut"
         )
         # Known lut
-        self._scalars_known_lut = torch.from_numpy(
-            vtk_image_to_numpy(image_known_lut)
-        ).to(device)
+        self._scalars_known_lut = load_vtk_image_to_tensor(image_known_lut).to(device)
         self._gradient_mags_known_lut = compute_gradient_magnitude(
             self._scalars_known_lut, image_known_lut.spacing
         )
         # LUT TBD for this volume
-        _scalars_unknown_lut = torch.from_numpy(
-            vtk_image_to_numpy(image_unknown_lut)
-        ).to(device)
+        _scalars_unknown_lut = load_vtk_image_to_tensor(image_unknown_lut).to(device)
         self._scalars_unknown_lut = normalize_volume_scalars(_scalars_unknown_lut)
         _gradient_mags_unknown_lut = compute_gradient_magnitude(
             _scalars_unknown_lut, image_unknown_lut.spacing
@@ -150,11 +138,12 @@ class SharedSlicePlaneDataset(torch.utils.data.Dataset):
 
         # Per-axis safe slice index ranges
         self.dims = image_known_lut.dimensions  # (nz, ny, nx)
-        self._axis_ranges = []
-        for d in self.dims:
+        self._axis_ranges = np.zeros((len(self.dims), 2), dtype=np.int64)
+        for i, d in enumerate(self.dims):
             lo = int(d * margin)
             hi = int(d * (1.0 - margin))
-            self._axis_ranges.append((lo, max(lo + 1, hi)))
+            self._axis_ranges[i][0] = lo
+            self._axis_ranges[i][1] = max(lo + 1, hi)
 
         # Largest square crop guaranteed to fit in any slice orientation
         self._crop_size = crop_size if crop_size is not None else min(self.dims)
@@ -163,9 +152,9 @@ class SharedSlicePlaneDataset(torch.utils.data.Dataset):
         return self._number_of_slices
 
     def __getitem__(self, _):
-        axis = torch.randint(0, 3, (1,)).item()
+        axis = int(torch.randint(0, 3, (1,)).item())
         lo, hi = self._axis_ranges[axis]
-        slice_plane_idx = torch.randint(lo, hi, (1,)).item()
+        slice_plane_idx = int(torch.randint(lo, hi, (1,)).item())
 
         known_s = extract_2d_slice(self._scalars_known_lut, axis, slice_plane_idx)
         known_g = extract_2d_slice(self._gradient_mags_known_lut, axis, slice_plane_idx)

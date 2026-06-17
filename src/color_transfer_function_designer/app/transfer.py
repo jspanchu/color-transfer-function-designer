@@ -7,7 +7,7 @@ from vtkmodules.vtkCommonDataModel import vtkImageData
 from color_transfer_function_designer.app.dataset import (
     SharedSlicePlaneDataset,
     compute_gradient_magnitude,
-    vtk_image_to_numpy,
+    load_vtk_image_to_tensor,
 )
 from color_transfer_function_designer.app.model import (
     TransferFunctionNet,
@@ -34,7 +34,7 @@ def lut_from_network(
     """
     scalar_range = volume.scalar_range
     grad_mag_max = compute_gradient_magnitude(
-        vtk_image_to_numpy(volume), volume.spacing
+        load_vtk_image_to_tensor(volume), volume.spacing
     ).max()
     gradient_range = (0.0, grad_mag_max)
     device = next(model.parameters()).device

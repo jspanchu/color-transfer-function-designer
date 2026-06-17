@@ -38,7 +38,7 @@ from vtkmodules.vtkRenderingVolumeOpenGL2 import vtkSmartVolumeMapper
 
 from color_transfer_function_designer.app.dataset import (
     compute_gradient_magnitude,
-    vtk_image_to_numpy,
+    load_vtk_image_to_tensor,
 )
 from color_transfer_function_designer.app.file import (
     FileBrowser,
@@ -190,8 +190,8 @@ class App(TrameApp):
         self._requested_file_type = ""
 
         # VTK.wasm views
-        self._ref_html_view = None
-        self._seg_html_view = None
+        self._ref_html_view: vtklocal.LocalView | None = None
+        self._seg_html_view: vtklocal.LocalView | None = None
         (
             self._ref_wnd,
             self._ref_renderer,
@@ -213,8 +213,8 @@ class App(TrameApp):
         self._gt_gof = vtkPiecewiseFunction(allow_duplicate_scalars=True)
 
         # Input volumes
-        self._ref_volume_data = None
-        self._seg_volume_data = None
+        self._ref_volume_data = vtkImageData()
+        self._seg_volume_data = vtkImageData()
 
         # Editor widget state
         self.state.seg_hist_y_range = []
@@ -285,7 +285,7 @@ class App(TrameApp):
 
     @change("reference_lut_source")
     def on_reference_lut_source_change(self, **_):
-        if self._ref_volume_data is None:
+        if self._ref_volume_data.number_of_points == 0:
             return
         if self.state.reference_lut_source == "nn":
             ctf, otf, gof = self._build_network_transfer_functions(
@@ -295,6 +295,7 @@ class App(TrameApp):
             self._ref_volume.property.SetColor(ctf)
             self._ref_volume.property.SetScalarOpacity(otf)
             self._ref_volume.property.SetGradientOpacity(gof)
+            assert self._ref_html_view is not None
             self._ref_html_view.update()
         elif self.state.reference_lut_source == "linear_map":
             ctf, otf, gof = self._map_ground_truth_lut_to_ref_volume_scalars(
@@ -304,6 +305,7 @@ class App(TrameApp):
             self._ref_volume.property.SetColor(ctf)
             self._ref_volume.property.SetScalarOpacity(otf)
             self._ref_volume.property.SetGradientOpacity(gof)
+            assert self._ref_html_view is not None
             self._ref_html_view.update()
         else:
             self.logger.error("Unknown reference_lut_source!")
@@ -358,7 +360,7 @@ class App(TrameApp):
     def ground_truth_opacities(self):
         opacities = []
         for i in range(self._gt_sof.size):
-            values = [0, 0, 0, 0]
+            values = [0.0] * 4
             self._gt_sof.GetNodeValue(i, values)
             opacities.extend(values[:2])
         return np.array(opacities, dtype=np.float64).reshape(-1, 2)
@@ -367,7 +369,7 @@ class App(TrameApp):
     def ground_truth_gradient_opacities(self):
         opacities = []
         for i in range(self._gt_gof.size):
-            values = [0, 0, 0, 0]
+            values = [0.0] * 4
             self._gt_gof.GetNodeValue(i, values)
             opacities.extend(values[:2])
         return np.array(opacities, dtype=np.float64).reshape(-1, 2)
@@ -395,7 +397,7 @@ class App(TrameApp):
     @controller.add("on_file_save")
     def on_file_save(self, path):
         self.logger.debug("on_file_save %s", path)
-        if self._ref_volume_data is None:
+        if self._ref_volume_data.number_of_points == 0:
             self.logger.error("No reference volume loaded, cannot export.")
             return
         colors, opacities, gradient_opacities = lut_from_network(
@@ -450,7 +452,10 @@ class App(TrameApp):
 
         self.state.transfer_function_file = str(path)
 
-        if self._ref_volume_data is not None and self._seg_volume_data is not None:
+        if (
+            self._ref_volume_data.number_of_points > 0
+            and self._seg_volume_data.number_of_points > 0
+        ):
             self._apply_gt_tf_to_segmentation_volume()
         self._check_all_loaded()
 
@@ -470,8 +475,8 @@ class App(TrameApp):
         # Read segmentation volume
         reader = vtkNIFTIImageReader(file_name=str(path))
         reader.Update()
-        self._seg_volume_data = reader.output
-        if self._seg_volume_data is None:
+        self._seg_volume_data.ShallowCopy(reader.output)
+        if self._seg_volume_data.number_of_points == 0:
             return
         self.logger.debug(
             "Loaded segmentation range [%f,%f] from %s",
@@ -491,6 +496,7 @@ class App(TrameApp):
         self._seg_renderer.AddVolume(self._seg_volume)
         self._check_all_loaded()
         self._seg_renderer.ResetCamera()
+        assert self._seg_html_view is not None
         self._seg_html_view.update(push_camera=True)
         self._refresh_slice("seg")
 
@@ -501,7 +507,8 @@ class App(TrameApp):
         # Reset renderer
         self._seg_volume.mapper.RemoveAllClippingPlanes()
         self._seg_renderer.RemoveAllViewProps()
-        self._seg_volume_data = None
+        self._seg_volume_data.Initialize()
+        assert self._seg_html_view is not None
         self._seg_html_view.update()
         self._check_all_loaded()
 
@@ -517,8 +524,8 @@ class App(TrameApp):
         scaler.function = f"NIFTI * {reader.rescale_slope} + {reader.rescale_intercept}"
         scaler.input_data = reader.output
         scaler.Update()
-        self._ref_volume_data = scaler.output
-        if self._ref_volume_data is None:
+        self._ref_volume_data.ShallowCopy(scaler.output)
+        if self._ref_volume_data.number_of_points == 0:
             return
         self.logger.debug(
             "Loaded reference volume scalar range [%f, %f] from %s",
@@ -554,6 +561,7 @@ class App(TrameApp):
         self._ref_renderer.AddVolume(self._ref_volume)
         self._check_all_loaded()
         self._ref_renderer.ResetCamera()
+        assert self._ref_html_view is not None
         self._ref_html_view.update(push_camera=True)
         self._refresh_slice("ref")
 
@@ -568,7 +576,8 @@ class App(TrameApp):
         # Reset renderer
         self._ref_volume.mapper.RemoveAllClippingPlanes()
         self._ref_renderer.RemoveAllViewProps()
-        self._ref_volume_data = None
+        self._ref_volume_data.Initialize()
+        assert self._ref_html_view is not None
         self._ref_html_view.update()
         self._check_all_loaded()
 
@@ -650,6 +659,7 @@ class App(TrameApp):
             self._ref_volume.property.SetColor(ctf)
             self._ref_volume.property.SetScalarOpacity(otf)
             self._ref_volume.property.SetGradientOpacity(gof)
+            assert self._ref_html_view is not None
             self._ref_html_view.update()
         elif self.state.reference_lut_source == "linear_map":
             ctf, otf, gof = self._map_ground_truth_lut_to_ref_volume_scalars(
@@ -659,6 +669,7 @@ class App(TrameApp):
             self._ref_volume.property.SetColor(ctf)
             self._ref_volume.property.SetScalarOpacity(otf)
             self._ref_volume.property.SetGradientOpacity(gof)
+            assert self._ref_html_view is not None
             self._ref_html_view.update()
         else:
             self.logger.error("Unknown reference_lut_source!")
@@ -721,6 +732,7 @@ class App(TrameApp):
             self._ref_volume.property.SetColor(ctf)
             self._ref_volume.property.SetScalarOpacity(otf)
             self._ref_volume.property.SetGradientOpacity(gof)
+            assert self._ref_html_view is not None
             self._ref_html_view.update()
             self.state.allow_transfer = False
 
@@ -742,6 +754,7 @@ class App(TrameApp):
             self._ref_volume.property.SetColor(ctf)
             self._ref_volume.property.SetScalarOpacity(otf)
             self._ref_volume.property.SetGradientOpacity(gof)
+            assert self._ref_html_view is not None
             self._ref_html_view.update()
 
     # ------------------------------------------------------------------
@@ -750,8 +763,8 @@ class App(TrameApp):
 
     def _check_all_loaded(self) -> None:
         ok = (
-            self._seg_volume_data is not None
-            and self._ref_volume_data is not None
+            self._seg_volume_data.number_of_points > 0
+            and self._ref_volume_data.number_of_points > 0
             and self._gt_ctf.size > 0
             and self._gt_sof.size > 0
             and self._gt_gof.size > 0
@@ -763,7 +776,7 @@ class App(TrameApp):
         self,
         colors: npt.NDArray[np.float64],
         scalar_opacities: npt.NDArray[np.float64],
-        gradient_opacities: npt.NDArray[np.float64],
+        gradient_opacities: npt.NDArray[np.float64] | None,
     ):
         self._gt_ctf.AddRGBPoints(
             numpy_to_vtk(colors[:, 0], deep=1),
@@ -774,8 +787,9 @@ class App(TrameApp):
         for scalar, alpha in scalar_opacities:
             self._gt_sof.AddPoint(scalar, alpha)
 
-        for gradient, alpha in gradient_opacities:
-            self._gt_gof.AddPoint(gradient, alpha)
+        if gradient_opacities is not None:
+            for gradient, alpha in gradient_opacities:
+                self._gt_gof.AddPoint(gradient, alpha)
 
         # Set state
         self.state.seg_opacities = scalar_opacities.tolist()
@@ -798,12 +812,19 @@ class App(TrameApp):
         seg_scalar_range = self._seg_volume_data.scalar_range
         seg_scalar_span = seg_scalar_range[1] - seg_scalar_range[0]
 
-        seg_grad_mag_max = compute_gradient_magnitude(
-            vtk_image_to_numpy(self._seg_volume_data), self._seg_volume_data.spacing
-        ).max()
-        ref_grad_mag_max = compute_gradient_magnitude(
-            vtk_image_to_numpy(volume), volume.spacing
-        ).max()
+        seg_grad_mag_max = (
+            compute_gradient_magnitude(
+                load_vtk_image_to_tensor(self._seg_volume_data),
+                self._seg_volume_data.spacing,
+            )
+            .max()
+            .item()
+        )
+        ref_grad_mag_max = (
+            compute_gradient_magnitude(load_vtk_image_to_tensor(volume), volume.spacing)
+            .max()
+            .item()
+        )
         new_rgb = self.ground_truth_colors.copy()
         new_alpha = self.ground_truth_opacities.copy()
         new_grad_alpha = self.ground_truth_gradient_opacities.copy()
@@ -976,6 +997,8 @@ class App(TrameApp):
         """
         if self._seg_renderer_wasm_id is None or self._ref_renderer_wasm_id is None:
             return
+        assert self._seg_html_view is not None
+        assert self._ref_html_view is not None
         self.ctrl.camera_sync_init(
             {
                 "refSeg": self._seg_html_view.ref_name,
@@ -992,6 +1015,7 @@ class App(TrameApp):
     def on_opacity_node_modified(self, _index, _node):
         self.logger.debug("Opacity node %d modified to %s", _index, str(_node))
         self._gt_sof.SetNodeValue(_index, [*_node, 0.5, 0.0])
+        assert self._seg_html_view is not None
         self._seg_html_view.update()
         self.state.allow_transfer = True
 
@@ -1004,6 +1028,7 @@ class App(TrameApp):
     def on_color_node_modified(self, _index, _node):
         self.logger.debug("Color node %d modified to %s", _index, str(_node))
         self._gt_ctf.SetNodeValue(_index, [_node[0], *_node[1], 0.5, 0.0])
+        assert self._seg_html_view is not None
         self._seg_html_view.update()
         self.state.allow_transfer = True
 
