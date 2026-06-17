@@ -36,6 +36,7 @@ from vtkmodules.vtkRenderingCore import (
 )
 from vtkmodules.vtkRenderingVolumeOpenGL2 import vtkSmartVolumeMapper
 
+from color_transfer_function_designer.app import module
 from color_transfer_function_designer.app.dataset import (
     compute_gradient_magnitude,
     load_vtk_image_to_tensor,
@@ -58,74 +59,6 @@ from color_transfer_function_designer.app.utils import (
 )
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-# Client-side camera sync between the two LocalView Wasm scenes. Registered via
-# client.Script and driven from the server with the JSEval controllers
-# `camera_sync_init` (wire up observers once both scenes are ready) and
-# `camera_sync_once` (snap the target view onto the reference view when
-# the link is enabled). All synchronization happens in the browser; the server
-# only forwards the renderer wasm ids and the view ref names.
-CAMERA_SYNC_JS = """
-let cameraSyncInitialized = false;
-let suppressCameraSync = false;
-let refCam = null;
-let tgtCam = null;
-let refRdr = null;
-let tgtRdr = null;
-let refRefName = null;
-let tgtRefName = null;
-
-// Copy the active-camera view params from src to dst, refit the dst clipping
-// range (the two volumes have different bounds) and redraw the dst view. The
-// suppress flag swallows the dst ModifiedEvent fired during set()/clipping so
-// the mirror does not echo back into an infinite loop.
-async function copyCamera(srcCam, dstCam, dstRdr, dstRefName) {
-  if (suppressCameraSync) return;
-  if (!window.trame.state.get("camera_linked")) return;
-  suppressCameraSync = true;
-  try {
-    await dstCam.setPosition(srcCam.position);
-    await dstCam.setFocalPoint(srcCam.focalPoint);
-    await dstCam.setViewUp(srcCam.viewUp);
-    await dstCam.setViewAngle(srcCam.viewAngle);
-    await dstCam.setParallelScale(srcCam.parallelScale);
-    await dstCam.setParallelProjection(srcCam.parallelProjection);
-    await dstRdr.resetCameraClippingRange();
-  } finally {
-    suppressCameraSync = false;
-  }
-  // Redraw the destination view client-side.
-  window.trame.refs[dstRefName].render();
-}
-
-function triggerCameraSync() {
-  // One-time snap of the target view onto the reference view on link.
-  if (!cameraSyncInitialized) return;
-  copyCamera(refCam, tgtCam, tgtRdr, tgtRefName);
-}
-
-async function setupCameraSync(refRef, refTgt, refRendererId, tgtRendererId) {
-  if (cameraSyncInitialized) return;
-  const refView = window.trame.refs[refRef];
-  const tgtView = window.trame.refs[refTgt];
-  if (!refView || !tgtView) return;  // a view not mounted yet -> retry on next `updated`
-
-  refRdr = refView.getVtkObject(refRendererId);
-  tgtRdr = tgtView.getVtkObject(tgtRendererId);
-  if (!refRdr || !tgtRdr) {console.error("Scene not synced yet"); return;}  // scene not synced yet -> retry
-
-  refCam = await refRdr.getActiveCamera();
-  tgtCam = await tgtRdr.getActiveCamera();
-  if (!refCam || !tgtCam) return;
-
-  refRefName = refRef;
-  tgtRefName = refTgt;
-  cameraSyncInitialized = true;  // only after every handle resolved
-
-  refCam.observe("ModifiedEvent", () => copyCamera(refCam, tgtCam, tgtRdr, tgtRefName));
-  tgtCam.observe("ModifiedEvent", () => copyCamera(tgtCam, refCam, refRdr, refRefName));
-}
-"""
 
 
 class App(TrameApp):
@@ -168,7 +101,7 @@ class App(TrameApp):
         server=None,
     ):
         super().__init__(server, client_type="vue3")
-
+        self.server.enable_module(module)
         self.state.trame__title = "Color Transfer Function Designer"
         self.file_browser = FileBrowser(home=data_directory)
 
@@ -333,7 +266,14 @@ class App(TrameApp):
         # On linking, snap the target view onto the reference camera. The
         # sync itself runs client-side; see CAMERA_SYNC_JS / triggerCameraSync.
         if camera_linked:
-            self.ctrl.camera_sync_once()
+            assert self._ref_html_view is not None
+            assert self._tgt_html_view is not None
+            self.ctrl.camera_sync_once(
+                {
+                    "srcRefName": self._ref_html_view.ref_name,
+                    "dstRefName": self._tgt_html_view.ref_name,
+                }
+            )
 
     # ------------------------------------------------------------------
     # Properties
@@ -988,12 +928,9 @@ class App(TrameApp):
     # Linked cameras (client-side sync)
     # ------------------------------------------------------------------
 
-    def _init_camera_sync(self, **_):
-        """Hand the renderer wasm ids to the client once both views are ready.
-
-        Fires on every LocalView ``updated`` event. The client ``setupCameraSync``
-        is idempotent and bails until both Wasm scenes have synced, so repeated
-        invocations are harmless.
+    def _init_reference_view_camera_sync(self, **_):
+        """Hand the renderer wasm ids to the client once the reference view is ready.
+        Fires on every LocalView ``updated`` event.
         """
         if self._ref_renderer_wasm_id is None or self._tgt_renderer_wasm_id is None:
             return
@@ -1001,10 +938,25 @@ class App(TrameApp):
         assert self._tgt_html_view is not None
         self.ctrl.camera_sync_init(
             {
-                "refRef": self._ref_html_view.ref_name,
-                "refTgt": self._tgt_html_view.ref_name,
-                "refRenderer": self._ref_renderer_wasm_id,
-                "tgtRenderer": self._tgt_renderer_wasm_id,
+                "srcRefName": self._ref_html_view.ref_name,
+                "dstRefName": self._tgt_html_view.ref_name,
+                "srcRendererId": self._ref_renderer_wasm_id,
+            }
+        )
+
+    def _init_target_view_camera_sync(self, **_):
+        """Hand the renderer wasm ids to the client once the target view is ready.
+        Fires on every LocalView ``updated`` event.
+        """
+        if self._ref_renderer_wasm_id is None or self._tgt_renderer_wasm_id is None:
+            return
+        assert self._ref_html_view is not None
+        assert self._tgt_html_view is not None
+        self.ctrl.camera_sync_init(
+            {
+                "srcRefName": self._tgt_html_view.ref_name,
+                "dstRefName": self._ref_html_view.ref_name,
+                "srcRendererId": self._tgt_renderer_wasm_id,
             }
         )
 
@@ -1205,17 +1157,14 @@ class App(TrameApp):
             # File dialog
             FileDialog(is_open=False, file_browser=self.file_browser)
 
-            # Client-side camera sync between the two LocalViews. `camera_sync_init`
-            # wires up the Wasm camera observers (called from each view's `updated`
-            # event); `camera_sync_once` snaps the views together when linking.
-            client.Script(CAMERA_SYNC_JS)
+            # Client-side camera sync between the two LocalViews.
+            # `camera_sync_init` captures the renderer id for a view and observes its camera for modifications
+            # `camera_sync_once` snaps the views together when linking.
             self.ctrl.camera_sync_init = client.JSEval(
-                exec="""utils.get('setupCameraSync')(
-  $event.refRef, $event.refTgt, $event.refRenderer, $event.tgtRenderer
-)""",
+                exec="utils.colorTransferFunctionDesignerCamera.setup($event.srcRefName, $event.dstRefName, $event.srcRendererId)",
             ).exec
             self.ctrl.camera_sync_once = client.JSEval(
-                exec="utils.get('triggerCameraSync')()",
+                exec="utils.colorTransferFunctionDesignerCamera.sync($event.srcRefName, $event.dstRefName)",
             ).exec
 
             with self.ui.drawer:
@@ -1403,7 +1352,7 @@ class App(TrameApp):
                                     # interactive_ratio=1,
                                     style="width: 100%; min-height: 0;",
                                     v_show=("reference_volume_file.length > 0",),
-                                    updated=self._init_camera_sync,
+                                    updated=self._init_reference_view_camera_sync,
                                 )
                                 self._ref_renderer_wasm_id = (
                                     self._ref_html_view.get_wasm_id(self._ref_renderer)
@@ -1446,7 +1395,7 @@ class App(TrameApp):
                                     # interactive_ratio=1,
                                     style="width: 100%; min-height: 0;",
                                     v_show=("target_volume_file.length > 0",),
-                                    updated=self._init_camera_sync,
+                                    updated=self._init_target_view_camera_sync,
                                 )
                                 self._tgt_renderer_wasm_id = (
                                     self._tgt_html_view.get_wasm_id(self._tgt_renderer)
