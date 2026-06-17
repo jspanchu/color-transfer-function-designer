@@ -6,7 +6,6 @@ import logging
 import os
 import pathlib
 import time
-from typing import ClassVar
 
 import numpy as np
 import numpy.typing as npt
@@ -65,26 +64,6 @@ class App(TrameApp):
     logger = logging.getLogger("color_transfer_function_designer.app.core.TrainingApp")
     install_handlers(logger)
 
-    # Slice/crop plane: maps a toolbar direction to the clipping-plane normal.
-    # A volume mapper keeps the half-space the normal points toward and crops
-    # the other side, so e.g. cropping the "+x" half (keeping "-x") needs a
-    # normal pointing toward -x. See _refresh_slice().
-    _SLICE_NORMALS: ClassVar[dict[str, tuple[float, float, float]]] = {
-        "+x": (-1.0, 0.0, 0.0),
-        "-x": (1.0, 0.0, 0.0),
-        "+y": (0.0, -1.0, 0.0),
-        "-y": (0.0, 1.0, 0.0),
-        "+z": (0.0, 0.0, -1.0),
-        "-z": (0.0, 0.0, 1.0),
-    }
-    _SLICE_AXIS: ClassVar[dict[str, int]] = {
-        "+x": 0,
-        "-x": 0,
-        "+y": 1,
-        "-y": 1,
-        "+z": 2,
-        "-z": 2,
-    }
     _SLICE_DIRECTIONS = (
         ("+X", "+x"),
         ("-X", "-x"),
@@ -181,18 +160,25 @@ class App(TrameApp):
         # Slice/crop plane state (per view). Position is a percentage [0, 100]
         # along the active axis so it stays valid when the direction changes.
         for key in ("ref", "tgt"):
-            setattr(self.state, f"{key}_slice_enabled", False)
-            setattr(self.state, f"{key}_slice_direction", "+x")
-            setattr(self.state, f"{key}_slice_position", 50)
+            setattr(self.state, f"{key}_crop_enabled", False)
+            setattr(self.state, f"{key}_crop_direction", "+x")
+            setattr(self.state, f"{key}_crop_position", 50)
 
-        # When linked, the slice plane / camera of one view drives the other.
+        # When linked, the crop plane / camera of one view drives the other.
         # Camera sync runs entirely client-side (see CAMERA_SYNC_JS); these wasm
         # ids let the client resolve each view's renderer/active camera. They are
         # populated when the LocalViews are created in _generate_ui().
-        self.state.slice_linked = False
+        self.state.crop_linked = False
         self.state.camera_linked = False
         self._ref_renderer_wasm_id = None
         self._tgt_renderer_wasm_id = None
+        self._ref_plane_wasm_id = None
+        self._tgt_plane_wasm_id = None
+
+        # Set after a volume (re)loads so the next view `updated` event re-applies
+        # that view's clipping plane on the client (loading resets the wasm mapper).
+        self._ref_crop_apply_pending = False
+        self._tgt_crop_apply_pending = False
 
         self._generate_ui()
 
@@ -242,24 +228,6 @@ class App(TrameApp):
             self._tgt_html_view.update()
         else:
             self.logger.error("Unknown target_lut_source!")
-
-    @change("ref_slice_enabled", "ref_slice_direction", "ref_slice_position")
-    def on_ref_slice_change(self, **_):
-        if self.state.slice_linked:
-            self._mirror_slice_state("ref", "tgt")
-        self._refresh_slice("ref")
-
-    @change("tgt_slice_enabled", "tgt_slice_direction", "tgt_slice_position")
-    def on_tgt_slice_change(self, **_):
-        if self.state.slice_linked:
-            self._mirror_slice_state("tgt", "ref")
-        self._refresh_slice("tgt")
-
-    @change("slice_linked")
-    def on_slice_linked_change(self, slice_linked, **_):
-        # On linking, make the target view adopt the reference slice plane.
-        if slice_linked:
-            self._mirror_slice_state("ref", "tgt")
 
     @change("camera_linked")
     def on_camera_linked_change(self, camera_linked, **_):
@@ -436,16 +404,16 @@ class App(TrameApp):
         self._ref_renderer.AddVolume(self._ref_volume)
         self._check_all_loaded()
         self._ref_renderer.ResetCamera()
+        # Re-apply the crop plane client-side once the wasm mapper has synced.
+        self._ref_crop_apply_pending = True
         assert self._ref_html_view is not None
         self._ref_html_view.update(push_camera=True)
-        self._refresh_slice("ref")
 
     def _unload_reference_volume(self):
         # Reset state
         self.state.reference_volume_file = ""
-        self.state.ref_slice_enabled = False
+        self.state.ref_crop_enabled = False
         # Reset renderer
-        self._ref_volume.mapper.RemoveAllClippingPlanes()
         self._ref_renderer.RemoveAllViewProps()
         self._ref_volume_data.Initialize()
         assert self._ref_html_view is not None
@@ -501,9 +469,10 @@ class App(TrameApp):
         self._tgt_renderer.AddVolume(self._tgt_volume)
         self._check_all_loaded()
         self._tgt_renderer.ResetCamera()
+        # Re-apply the crop plane client-side once the wasm mapper has synced.
+        self._tgt_crop_apply_pending = True
         assert self._tgt_html_view is not None
         self._tgt_html_view.update(push_camera=True)
-        self._refresh_slice("tgt")
 
     def _unload_target_volume(self):
         # Reset state
@@ -512,9 +481,8 @@ class App(TrameApp):
         self.state.tgt_opacities = []
         self.state.tgt_gradient_opacities = []
         self.state.tgt_scalar_range = []
-        self.state.tgt_slice_enabled = False
+        self.state.tgt_crop_enabled = False
         # Reset renderer
-        self._tgt_volume.mapper.RemoveAllClippingPlanes()
         self._tgt_renderer.RemoveAllViewProps()
         self._tgt_volume_data.Initialize()
         assert self._tgt_html_view is not None
@@ -852,81 +820,50 @@ class App(TrameApp):
         volume_property.SetScalarOpacityUnitDistance(1.754420659713536)
         volume_property.SetScatteringAnisotropy(0)
 
-        # Slice/crop plane. Attached to the mapper on demand by _refresh_slice().
-        slice_plane = vtkPlane()
+        # Slice/crop plane. Attached to the mapper on demand.
+        crop_plane = vtkPlane()
 
-        return window, renderer, volume_actor, slice_plane
+        return window, renderer, volume_actor, crop_plane
 
     # ------------------------------------------------------------------
-    # Slice / crop plane
+    # Linked views (client-side camera + slice/crop plane sync)
     # ------------------------------------------------------------------
 
-    def _slice_targets(self, key: str):
-        """Return (volume_data, volume_actor, slice_plane, html_view) for a view."""
+    def _apply_crop_client(self, key: str) -> None:
+        """Forward a view's wasm handles + volume bounds to the client and have
+        it (re)apply the clipping plane there. All ongoing crop changes are
+        handled in the browser via state watchers.
+        See color_transfer_function_designer.app.module.serve.crop.js.
+        """
         if key == "ref":
-            return (
-                self._ref_volume_data,
-                self._ref_volume,
-                self._ref_plane,
-                self._ref_html_view,
-            )
-        return (
-            self._tgt_volume_data,
-            self._tgt_volume,
-            self._tgt_plane,
-            self._tgt_html_view,
+            html_view, mapper = self._ref_html_view, self._ref_volume.mapper
+            plane_id, volume_data = self._ref_plane_wasm_id, self._ref_volume_data
+        else:
+            html_view, mapper = self._tgt_html_view, self._tgt_volume.mapper
+            plane_id, volume_data = self._tgt_plane_wasm_id, self._tgt_volume_data
+        if html_view is None or volume_data is None or plane_id is None:
+            return
+        self.ctrl.crop_sync_init(
+            {
+                "key": key,
+                "refName": html_view.ref_name,
+                "mapperId": html_view.get_wasm_id(mapper),
+                "planeId": plane_id,
+                "bounds": list(volume_data.bounds),
+            }
         )
 
-    def _refresh_slice(self, key: str) -> None:
-        """Sync a view's clipping plane to the current slice toolbar state.
+    def _on_reference_view_updated(self, **_):
+        self._init_reference_view_camera_sync()
+        if self._ref_crop_apply_pending:
+            self._ref_crop_apply_pending = False
+            self._apply_crop_client("ref")
 
-        The plane is axis-aligned along the selected direction. The mapper keeps
-        the side the normal points toward, so the configured direction is the
-        cropped half (e.g. "+x" crops voxels on the +x side, keeps the -x side).
-        """
-        volume_data, actor, plane, html_view = self._slice_targets(key)
-        if html_view is None:
-            return
-
-        mapper = actor.mapper
-        mapper.RemoveAllClippingPlanes()
-
-        enabled = getattr(self.state, f"{key}_slice_enabled")
-        if enabled and volume_data is not None:
-            direction = getattr(self.state, f"{key}_slice_direction")
-            percent = float(getattr(self.state, f"{key}_slice_position"))
-            axis = self._SLICE_AXIS[direction]
-            bounds = volume_data.bounds
-            lo, hi = bounds[2 * axis], bounds[2 * axis + 1]
-            origin = [
-                0.5 * (bounds[0] + bounds[1]),
-                0.5 * (bounds[2] + bounds[3]),
-                0.5 * (bounds[4] + bounds[5]),
-            ]
-            origin[axis] = lo + (percent / 100.0) * (hi - lo)
-            plane.SetOrigin(*origin)
-            plane.SetNormal(*self._SLICE_NORMALS[direction])
-            mapper.AddClippingPlane(plane)
-
-        html_view.update()
-
-    def _mirror_slice_state(self, src: str, dst: str) -> None:
-        """Copy the slice toolbar state of one view onto the other.
-
-        Setting the destination state variables triggers that view's own change
-        handler, which refreshes its clipping plane. trame skips unchanged values
-        so mirroring back from the destination is a no-op (no feedback loop).
-        """
-        for prop in ("enabled", "direction", "position"):
-            setattr(
-                self.state,
-                f"{dst}_slice_{prop}",
-                getattr(self.state, f"{src}_slice_{prop}"),
-            )
-
-    # ------------------------------------------------------------------
-    # Linked cameras (client-side sync)
-    # ------------------------------------------------------------------
+    def _on_target_view_updated(self, **_):
+        self._init_target_view_camera_sync()
+        if self._tgt_crop_apply_pending:
+            self._tgt_crop_apply_pending = False
+            self._apply_crop_client("tgt")
 
     def _init_reference_view_camera_sync(self, **_):
         """Hand the renderer wasm ids to the client once the reference view is ready.
@@ -1047,31 +984,31 @@ class App(TrameApp):
             handle_border_color=("handle_border_color", [0.75, 0.75, 0.75, 1]),
         )
 
-    def _slice_plane_toolbar(self, key: str, volume_state: str):
-        """Toolbar to enable/orient/position the slice-crop plane for a view.
+    def _crop_plane_toolbar(self, key: str, volume_state: str):
+        """Toolbar to enable/orient/position the crop plane for a view.
 
         Shared by both LocalViews; ``key`` is "ref" or "tgt" and ``volume_state``
         is the state variable holding that view's loaded file path.
         """
-        enabled = f"{key}_slice_enabled"
-        direction = f"{key}_slice_direction"
-        position = f"{key}_slice_position"
+        enabled = f"{key}_crop_enabled"
+        direction = f"{key}_crop_direction"
+        position = f"{key}_crop_position"
         with vuetify3.VToolbar(
             density="compact",
             color="transparent",
             flat=True,
             v_show=(f"{volume_state}.length > 0",),
         ):
-            # Link toggles shared by both views: mirror the slice plane / camera.
+            # Link toggles shared by both views: mirror the crop plane / camera.
             with vuetify3.VBtn(
                 size="small",
                 prepend_icon=(
-                    "slice_linked ? 'mdi-link-variant' : 'mdi-link-variant-off'",
+                    "crop_linked ? 'mdi-link-variant' : 'mdi-link-variant-off'",
                 ),
                 density="compact",
-                variant=("slice_linked ? 'tonal' : 'text'",),
-                color=("slice_linked ? 'primary' : ''",),
-                click="slice_linked = !slice_linked",
+                variant=("crop_linked ? 'tonal' : 'text'",),
+                color=("crop_linked ? 'primary' : ''",),
+                click="crop_linked = !crop_linked",
                 classes="ml-2",
             ):
                 vuetify3.VTooltip(
@@ -1165,6 +1102,9 @@ class App(TrameApp):
             ).exec
             self.ctrl.camera_sync_once = client.JSEval(
                 exec="utils.colorTransferFunctionDesignerCamera.sync($event.srcRefName, $event.dstRefName)",
+            ).exec
+            self.ctrl.crop_sync_init = client.JSEval(
+                exec="utils.colorTransferFunctionDesignerCrop.setup($event)",
             ).exec
 
             with self.ui.drawer:
@@ -1343,19 +1283,22 @@ class App(TrameApp):
                                             "['reference_volume']",
                                         ),
                                     )
-                                self._slice_plane_toolbar(
-                                    "ref", "reference_volume_file"
-                                )
+                                self._crop_plane_toolbar("ref", "reference_volume_file")
                                 self._ref_html_view = vtklocal.LocalView(
                                     self._ref_wnd,
                                     ref="ref_view",
                                     # interactive_ratio=1,
                                     style="width: 100%; min-height: 0;",
                                     v_show=("reference_volume_file.length > 0",),
-                                    updated=self._init_reference_view_camera_sync,
+                                    updated=self._on_reference_view_updated,
                                 )
                                 self._ref_renderer_wasm_id = (
                                     self._ref_html_view.get_wasm_id(self._ref_renderer)
+                                )
+                                self._ref_plane_wasm_id = (
+                                    self._ref_html_view.register_vtk_object(
+                                        self._ref_plane
+                                    )
                                 )
                         with vuetify3.VCol(
                             cols="12",
@@ -1388,17 +1331,22 @@ class App(TrameApp):
                                             "['target_volume']",
                                         ),
                                     )
-                                self._slice_plane_toolbar("tgt", "target_volume_file")
+                                self._crop_plane_toolbar("tgt", "target_volume_file")
                                 self._tgt_html_view = vtklocal.LocalView(
                                     self._tgt_wnd,
                                     ref="tgt_view",
                                     # interactive_ratio=1,
                                     style="width: 100%; min-height: 0;",
                                     v_show=("target_volume_file.length > 0",),
-                                    updated=self._init_target_view_camera_sync,
+                                    updated=self._on_target_view_updated,
                                 )
                                 self._tgt_renderer_wasm_id = (
                                     self._tgt_html_view.get_wasm_id(self._tgt_renderer)
+                                )
+                                self._tgt_plane_wasm_id = (
+                                    self._tgt_html_view.register_vtk_object(
+                                        self._tgt_plane
+                                    )
                                 )
 
                     # Row — actions
