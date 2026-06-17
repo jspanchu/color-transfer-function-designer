@@ -76,10 +76,10 @@ def convert_lut_to_state_format(
     return colors, opacities, gradient_opacities
 
 
-def transfer_segmentation_lut(
+def transfer_reference_lut(
     model: TransferFunctionNet,
+    tgt_volume: vtkImageData,
     ref_volume: vtkImageData,
-    seg_volume: vtkImageData,
     lut_rgb: np.ndarray,
     lut_scalar_alpha: np.ndarray,
     lut_gradient_alpha: np.ndarray,
@@ -93,16 +93,16 @@ def transfer_segmentation_lut(
 ):
     """
     Returns a :class:`color_transfer_function_designer.app.model.TransferFunctionNet` whose weights and biases
-    are learned to map `ref_volume` scalars to color/opacity similar to the manner in which `lut_rgb`, `lut_scalar_alpha`,
-    and `lut_gradient_alpha` map `seg_volume` scalars.
+    are learned to map `tgt_volume` scalars to color/opacity similar to the manner in which `lut_rgb`, `lut_scalar_alpha`,
+    and `lut_gradient_alpha` map `ref_volume` scalars.
 
     Parameters
     ----------
-    ref_volume : This is another :class:`vtkImageData` containing real valued scalars (ex: MRI intensies)
-    seg_volume : This is a :class:`vtkImageData` with a segmentation mask (ex: discrete numbers - 0, 1, 2, 3, .. etc)
-    lut_rgb : (N, 4) [scalar, r, g, b] in scalar range of `seg_volume`.
-    lut_scalar_alpha :  (M, 2) [scalar, a] in scalar range of `seg_volume`.
-    lut_gradient_alpha :  (M, 2) [gradient, a] in gradient magnitudes range of `seg_volume`.
+    tgt_volume : This is another :class:`vtkImageData` containing real valued scalars (ex: MRI intensies)
+    ref_volume : This is a :class:`vtkImageData` with a reference mask (ex: discrete numbers - 0, 1, 2, 3, .. etc)
+    lut_rgb : (N, 4) [scalar, r, g, b] in scalar range of `ref_volume`.
+    lut_scalar_alpha :  (M, 2) [scalar, a] in scalar range of `ref_volume`.
+    lut_gradient_alpha :  (M, 2) [gradient, a] in gradient magnitudes range of `ref_volume`.
     n_slices : number of slices to use for initial training
     batch_size : number of slices per batch
     n_epochs : number of training epochs
@@ -112,11 +112,11 @@ def transfer_segmentation_lut(
     """
 
     assert (
-        lut_rgb.min(0)[0] == lut_scalar_alpha.min(0)[0] == seg_volume.scalar_range[0]
-    ), "Segmentation scalar minimum != lut_rgb, or lut_scalar_alpha minimum value"
+        lut_rgb.min(0)[0] == lut_scalar_alpha.min(0)[0] == ref_volume.scalar_range[0]
+    ), "Reference scalar minimum != lut_rgb, or lut_scalar_alpha minimum value"
     assert (
-        lut_rgb.max(0)[0] == lut_scalar_alpha.max(0)[0] == seg_volume.scalar_range[1]
-    ), "Segmentation scalar maximum != lut_rgb, or lut_scalar_alpha maximum value"
+        lut_rgb.max(0)[0] == lut_scalar_alpha.max(0)[0] == ref_volume.scalar_range[1]
+    ), "Reference scalar maximum != lut_rgb, or lut_scalar_alpha maximum value"
 
     model.train()
 
@@ -126,8 +126,8 @@ def transfer_segmentation_lut(
     )
     criterion = torch.nn.L1Loss()
     dataset = SharedSlicePlaneDataset(
-        image_known_lut=seg_volume,
-        image_unknown_lut=ref_volume,
+        image_known_lut=ref_volume,
+        image_unknown_lut=tgt_volume,
         lut_rgb=lut_rgb,
         lut_scalar_alpha=lut_scalar_alpha,
         lut_gradient_alpha=lut_gradient_alpha,

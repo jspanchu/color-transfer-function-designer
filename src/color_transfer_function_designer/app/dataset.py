@@ -81,7 +81,7 @@ class SharedSlicePlaneDataset(torch.utils.data.Dataset):
         Parameters
         ----------
         image_known_lut:
-            Volume whose scalar-to-RGBA mapping is already known (e.g. a segmentation mask
+            Volume whose scalar-to-RGBA mapping is already known (e.g. a reference mask
             with an established color transfer function).
         image_unknown_lut:
             Volume whose transfer function is being learned (e.g. a co-registered MRI).

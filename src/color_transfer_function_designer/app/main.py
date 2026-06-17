@@ -24,7 +24,7 @@ async def real_main(server=None):
     )
     server.cli.add_argument(  # pyright: ignore[reportOptionalMemberAccess]
         "--config",
-        help="Path to a JSON file with default seg_file, tf_file, ref_file paths",
+        help="Path to a JSON file with default ref_file, tf_file, tgt_file paths",
         default=None,
         type=str,
     )
