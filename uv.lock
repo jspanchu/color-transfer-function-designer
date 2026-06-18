@@ -552,6 +552,8 @@ name = "color-transfer-function-designer"
 version = "1.0.0"
 source = { editable = "." }
 dependencies = [
+    { name = "pytest" },
+    { name = "pytest-cov" },
     { name = "torch" },
     { name = "torchvision" },
     { name = "trame" },
@@ -568,8 +570,6 @@ app = [
 dev = [
     { name = "nox" },
     { name = "pre-commit" },
-    { name = "pytest" },
-    { name = "pytest-cov" },
     { name = "ruff" },
 ]
 jupyter = [
@@ -581,8 +581,8 @@ requires-dist = [
     { name = "jupyterlab", marker = "extra == 'jupyter'" },
     { name = "nox", marker = "extra == 'dev'" },
     { name = "pre-commit", marker = "extra == 'dev'" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=6" },
-    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=3" },
+    { name = "pytest", specifier = ">=6" },
+    { name = "pytest-cov", specifier = ">=3" },
     { name = "pywebview", marker = "extra == 'app'" },
     { name = "ruff", marker = "extra == 'dev'" },
     { name = "torch", specifier = "==2.11.0" },

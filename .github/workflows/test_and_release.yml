@@ -59,7 +59,7 @@ jobs:
         run: |
           uv sync --dev
           uv pip install -r tests/requirements.txt
-          uv run pytest -s ./tests
+          uv run pytest -s --cov  --cov-report=term-missing ./tests
 
   # release:
   #   needs: [pre-commit, pytest]

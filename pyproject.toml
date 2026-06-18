@@ -6,6 +6,8 @@ authors = [
     {name = "Jaswant Panchumarti"},
 ]
 dependencies = [
+    "pytest >=6",
+    "pytest-cov >=3",
     "torch==2.11.0",
     "torchvision==0.26.0",
     "trame>=3.12",
@@ -39,8 +41,6 @@ jupyter = [
 dev = [
     "pre-commit",
     "ruff",
-    "pytest >=6",
-    "pytest-cov >=3",
     "nox",
 ]
 
@@ -62,6 +62,25 @@ include = [
 [tool.hatch.build.targets.wheel]
 packages = [
     "src/color_transfer_function_designer",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.coverage.run]
+branch = true
+source = ["src/color_transfer_function_designer/app"]
+
+[tool.coverage.report]
+show_missing = true
+fail_under = 100
+# Only the pure (UI-free) logic modules are gated at 100%; core.py / file.py
+# are tightly coupled to trame/VTK-wasm and are out of scope.
+include = [
+    "*/app/model.py",
+    "*/app/dataset.py",
+    "*/app/transfer.py",
+    "*/app/utils.py",
 ]
 
 [tool.ruff]
