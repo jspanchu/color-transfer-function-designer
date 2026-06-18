@@ -6,7 +6,6 @@ import logging
 import os
 import pathlib
 import time
-from typing import ClassVar
 
 import numpy as np
 import numpy.typing as npt
@@ -16,7 +15,7 @@ import vtkmodules.vtkRenderingOpenGL2  # noqa: F401
 from trame.app import TrameApp, asynchronous
 from trame.decorators import change, controller
 from trame.ui.vuetify3 import SinglePageWithDrawerLayout
-from trame.widgets import color_opacity_editor, vtklocal, vuetify3
+from trame.widgets import client, color_opacity_editor, vtklocal, vuetify3
 from vtkmodules.util.numpy_support import numpy_to_vtk
 from vtkmodules.vtkCommonCore import VTK_DOUBLE
 from vtkmodules.vtkCommonDataModel import (
@@ -36,9 +35,10 @@ from vtkmodules.vtkRenderingCore import (
 )
 from vtkmodules.vtkRenderingVolumeOpenGL2 import vtkSmartVolumeMapper
 
+from color_transfer_function_designer.app import module
 from color_transfer_function_designer.app.dataset import (
     compute_gradient_magnitude,
-    vtk_image_to_numpy,
+    load_vtk_image_to_tensor,
 )
 from color_transfer_function_designer.app.file import (
     FileBrowser,
@@ -49,7 +49,7 @@ from color_transfer_function_designer.app.model import TransferFunctionNet
 from color_transfer_function_designer.app.transfer import (
     convert_lut_to_state_format,
     lut_from_network,
-    transfer_segmentation_lut,
+    transfer_reference_lut,
 )
 from color_transfer_function_designer.app.utils import (
     read_paraview_tf_from_json,
@@ -64,26 +64,6 @@ class App(TrameApp):
     logger = logging.getLogger("color_transfer_function_designer.app.core.TrainingApp")
     install_handlers(logger)
 
-    # Slice/crop plane: maps a toolbar direction to the clipping-plane normal.
-    # A volume mapper keeps the half-space the normal points toward and crops
-    # the other side, so e.g. cropping the "+x" half (keeping "-x") needs a
-    # normal pointing toward -x. See _refresh_slice().
-    _SLICE_NORMALS: ClassVar[dict[str, tuple[float, float, float]]] = {
-        "+x": (-1.0, 0.0, 0.0),
-        "-x": (1.0, 0.0, 0.0),
-        "+y": (0.0, -1.0, 0.0),
-        "-y": (0.0, 1.0, 0.0),
-        "+z": (0.0, 0.0, -1.0),
-        "-z": (0.0, 0.0, 1.0),
-    }
-    _SLICE_AXIS: ClassVar[dict[str, int]] = {
-        "+x": 0,
-        "-x": 0,
-        "+y": 1,
-        "-y": 1,
-        "+z": 2,
-        "-z": 2,
-    }
     _SLICE_DIRECTIONS = (
         ("+X", "+x"),
         ("-X", "-x"),
@@ -100,7 +80,7 @@ class App(TrameApp):
         server=None,
     ):
         super().__init__(server, client_type="vue3")
-
+        self.server.enable_module(module)
         self.state.trame__title = "Color Transfer Function Designer"
         self.file_browser = FileBrowser(home=data_directory)
 
@@ -122,22 +102,22 @@ class App(TrameApp):
         self._requested_file_type = ""
 
         # VTK.wasm views
-        self._ref_html_view = None
-        self._seg_html_view = None
+        self._tgt_html_view: vtklocal.LocalView | None = None
+        self._ref_html_view: vtklocal.LocalView | None = None
+        (
+            self._tgt_wnd,
+            self._tgt_renderer,
+            self._tgt_volume,
+            self._tgt_plane,
+        ) = self._setup_vtk_pipeline()
         (
             self._ref_wnd,
             self._ref_renderer,
             self._ref_volume,
             self._ref_plane,
         ) = self._setup_vtk_pipeline()
-        (
-            self._seg_wnd,
-            self._seg_renderer,
-            self._seg_volume,
-            self._seg_plane,
-        ) = self._setup_vtk_pipeline()
 
-        # Ground-truth transfer function data (in segmentation scalar range)
+        # Ground-truth transfer function data (in reference scalar range)
         self._gt_ctf = vtkDiscretizableColorTransferFunction(
             allow_duplicate_scalars=True, discretize=True, number_of_values=256
         )
@@ -145,31 +125,31 @@ class App(TrameApp):
         self._gt_gof = vtkPiecewiseFunction(allow_duplicate_scalars=True)
 
         # Input volumes
-        self._ref_volume_data = None
-        self._seg_volume_data = None
+        self._tgt_volume_data = vtkImageData()
+        self._ref_volume_data = vtkImageData()
 
         # Editor widget state
-        self.state.seg_hist_y_range = []
-        self.state.seg_histograms = []
-        self.state.seg_colors = []
-        self.state.seg_opacities = []
-        self.state.seg_scalar_range = []
         self.state.ref_hist_y_range = []
         self.state.ref_histograms = []
         self.state.ref_colors = []
         self.state.ref_opacities = []
         self.state.ref_scalar_range = []
+        self.state.tgt_hist_y_range = []
+        self.state.tgt_histograms = []
+        self.state.tgt_colors = []
+        self.state.tgt_opacities = []
+        self.state.tgt_scalar_range = []
 
         # File upload state
         self.state.transfer_function_file = ""
-        self.state.segmentation_volume_file = ""
         self.state.reference_volume_file = ""
+        self.state.target_volume_file = ""
 
         # Progress state
         self.state.progress_percent = 0
 
         # Transfer function state
-        self.state.reference_lut_source = "linear_map"
+        self.state.target_lut_source = "linear_map"
 
         # Button disabled states
         self.state.allow_transfer = False
@@ -179,17 +159,28 @@ class App(TrameApp):
 
         # Slice/crop plane state (per view). Position is a percentage [0, 100]
         # along the active axis so it stays valid when the direction changes.
-        for key in ("seg", "ref"):
-            setattr(self.state, f"{key}_slice_enabled", False)
-            setattr(self.state, f"{key}_slice_direction", "+x")
-            setattr(self.state, f"{key}_slice_position", 50)
+        for key in ("ref", "tgt"):
+            setattr(self.state, f"{key}_crop_enabled", False)
+            setattr(self.state, f"{key}_crop_direction", "+x")
+            setattr(self.state, f"{key}_crop_position", 50)
 
-        # When linked, the slice plane / camera of one view drives the other.
-        self.state.slice_linked = False
+        # When linked, the crop plane / camera of one view drives the other.
+        # Camera sync runs entirely client-side (see CAMERA_SYNC_JS); these wasm
+        # ids let the client resolve each view's renderer/active camera. They are
+        # populated when the LocalViews are created in _generate_ui().
+        self.state.crop_linked = False
         self.state.camera_linked = False
-        # Monotonic deadlines used to ignore the camera echo produced by our own
-        # push when mirroring a camera, preventing a sync feedback loop.
-        self._camera_sync_mute = {"seg": 0.0, "ref": 0.0}
+        # While a transfer runs the tgt view is repeatedly re-`update()`d, which
+        # would race a client-side crop apply; lock the tgt crop UI meanwhile.
+        self.state.tgt_crop_locked = False
+        self._ref_renderer_wasm_id = None
+        self._tgt_renderer_wasm_id = None
+        self._ref_plane_wasm_id = None
+        self._tgt_plane_wasm_id = None
+
+        # Set when a transfer finishes so the next tgt view `updated` event
+        # unlocks the tgt crop UI and re-applies the (transfer-wiped) crop.
+        self._tgt_crop_unlock_pending = False
 
         self._generate_ui()
 
@@ -213,54 +204,46 @@ class App(TrameApp):
     def on_n_slices_change(self, n_slices, **_):
         self.state.batch_size = min(n_slices, self.state.batch_size)
 
-    @change("reference_lut_source")
-    def on_reference_lut_source_change(self, **_):
-        if self._ref_volume_data is None:
+    @change("target_lut_source")
+    def on_target_lut_source_change(self, **_):
+        if self._tgt_volume_data.number_of_points == 0:
             return
-        if self.state.reference_lut_source == "nn":
+        if self.state.target_lut_source == "nn":
             ctf, otf, gof = self._build_network_transfer_functions(
-                self._ref_volume_data,
+                self._tgt_volume_data,
                 snapshot_lut_in_state=True,
             )
-            self._ref_volume.property.SetColor(ctf)
-            self._ref_volume.property.SetScalarOpacity(otf)
-            self._ref_volume.property.SetGradientOpacity(gof)
-            self._ref_html_view.update()
-        elif self.state.reference_lut_source == "linear_map":
-            ctf, otf, gof = self._map_ground_truth_lut_to_ref_volume_scalars(
-                self._ref_volume_data,
+            self._tgt_volume.property.SetColor(ctf)
+            self._tgt_volume.property.SetScalarOpacity(otf)
+            self._tgt_volume.property.SetGradientOpacity(gof)
+            assert self._tgt_html_view is not None
+            self._tgt_html_view.update()
+        elif self.state.target_lut_source == "linear_map":
+            ctf, otf, gof = self._map_ground_truth_lut_to_tgt_volume_scalars(
+                self._tgt_volume_data,
                 snapshot_lut_in_state=True,
             )
-            self._ref_volume.property.SetColor(ctf)
-            self._ref_volume.property.SetScalarOpacity(otf)
-            self._ref_volume.property.SetGradientOpacity(gof)
-            self._ref_html_view.update()
+            self._tgt_volume.property.SetColor(ctf)
+            self._tgt_volume.property.SetScalarOpacity(otf)
+            self._tgt_volume.property.SetGradientOpacity(gof)
+            assert self._tgt_html_view is not None
+            self._tgt_html_view.update()
         else:
-            self.logger.error("Unknown reference_lut_source!")
-
-    @change("seg_slice_enabled", "seg_slice_direction", "seg_slice_position")
-    def on_seg_slice_change(self, **_):
-        if self.state.slice_linked:
-            self._mirror_slice_state("seg", "ref")
-        self._refresh_slice("seg")
-
-    @change("ref_slice_enabled", "ref_slice_direction", "ref_slice_position")
-    def on_ref_slice_change(self, **_):
-        if self.state.slice_linked:
-            self._mirror_slice_state("ref", "seg")
-        self._refresh_slice("ref")
-
-    @change("slice_linked")
-    def on_slice_linked_change(self, slice_linked, **_):
-        # On linking, make the reference view adopt the segmentation slice plane.
-        if slice_linked:
-            self._mirror_slice_state("seg", "ref")
+            self.logger.error("Unknown target_lut_source!")
 
     @change("camera_linked")
     def on_camera_linked_change(self, camera_linked, **_):
-        # On linking, make the reference view adopt the segmentation camera.
+        # On linking, snap the target view onto the reference camera. The
+        # sync itself runs client-side; see CAMERA_SYNC_JS / triggerCameraSync.
         if camera_linked:
-            self._sync_camera_to("seg", "ref")
+            assert self._ref_html_view is not None
+            assert self._tgt_html_view is not None
+            self.ctrl.camera_sync_once(
+                {
+                    "srcRefName": self._ref_html_view.ref_name,
+                    "dstRefName": self._tgt_html_view.ref_name,
+                }
+            )
 
     # ------------------------------------------------------------------
     # Properties
@@ -287,7 +270,7 @@ class App(TrameApp):
     def ground_truth_opacities(self):
         opacities = []
         for i in range(self._gt_sof.size):
-            values = [0, 0, 0, 0]
+            values = [0.0] * 4
             self._gt_sof.GetNodeValue(i, values)
             opacities.extend(values[:2])
         return np.array(opacities, dtype=np.float64).reshape(-1, 2)
@@ -296,7 +279,7 @@ class App(TrameApp):
     def ground_truth_gradient_opacities(self):
         opacities = []
         for i in range(self._gt_gof.size):
-            values = [0, 0, 0, 0]
+            values = [0.0] * 4
             self._gt_gof.GetNodeValue(i, values)
             opacities.extend(values[:2])
         return np.array(opacities, dtype=np.float64).reshape(-1, 2)
@@ -316,20 +299,20 @@ class App(TrameApp):
         self.logger.debug("on_file_open %s", path)
         if self._requested_file_type == "transfer_function":
             self._load_transfer_function(path)
-        elif self._requested_file_type == "segmentation_volume":
-            self._load_segmentation_volume(path)
         elif self._requested_file_type == "reference_volume":
             self._load_reference_volume(path)
+        elif self._requested_file_type == "target_volume":
+            self._load_target_volume(path)
 
     @controller.add("on_file_save")
     def on_file_save(self, path):
         self.logger.debug("on_file_save %s", path)
-        if self._ref_volume_data is None:
-            self.logger.error("No reference volume loaded, cannot export.")
+        if self._tgt_volume_data.number_of_points == 0:
+            self.logger.error("No target volume loaded, cannot export.")
             return
         colors, opacities, gradient_opacities = lut_from_network(
             self._model,
-            self._ref_volume_data,
+            self._tgt_volume_data,
             n_points=self.state.n_lut_sampling_points,
         )
         lut_rgb = np.array([[s, r, g, b] for s, (r, g, b) in colors])
@@ -379,63 +362,81 @@ class App(TrameApp):
 
         self.state.transfer_function_file = str(path)
 
-        if self._ref_volume_data is not None and self._seg_volume_data is not None:
-            self._apply_gt_tf_to_segmentation_volume()
+        if (
+            self._tgt_volume_data.number_of_points > 0
+            and self._ref_volume_data.number_of_points > 0
+        ):
+            self._apply_gt_tf_to_reference_volume()
         self._check_all_loaded()
 
     def _unload_transfer_function(self):
         # Reset state
-        self.state.seg_colors = []
-        self.state.seg_opacities = []
-        self.state.seg_scalar_range = []
+        self.state.ref_colors = []
+        self.state.ref_opacities = []
+        self.state.ref_scalar_range = []
         self.state.transfer_function_file = ""
         self._gt_gof.RemoveAllPoints()
         self._gt_sof.RemoveAllPoints()
         self._gt_ctf.RemoveAllPoints()
         self._check_all_loaded()
 
-    def _load_segmentation_volume(self, path: pathlib.Path) -> None:
-        self._unload_segmentation_volume()
-        # Read segmentation volume
+    def _load_reference_volume(self, path: pathlib.Path) -> None:
+        # Reset without pushing an update: loading issues a single update() below.
+        # A second update() here would let the client coalesce them and emit a
+        # premature `updated` (before the new mapper is deserialized), firing the
+        # crop re-apply against a not-yet-created mapper.
+        self._reset_reference_view()
+        # Read reference volume
         reader = vtkNIFTIImageReader(file_name=str(path))
         reader.Update()
-        self._seg_volume_data = reader.output
-        if self._seg_volume_data is None:
+        self._ref_volume_data.ShallowCopy(reader.output)
+        if self._ref_volume_data.number_of_points == 0:
             return
         self.logger.debug(
-            "Loaded segmentation range [%f,%f] from %s",
-            self._seg_volume_data.scalar_range[0],
-            self._seg_volume_data.scalar_range[1],
+            "Loaded reference range [%f,%f] from %s",
+            self._ref_volume_data.scalar_range[0],
+            self._ref_volume_data.scalar_range[1],
             reader.file_name,
         )
-        self._seg_volume.mapper.input_data = self._seg_volume_data
+        self._ref_volume.mapper.input_data = self._ref_volume_data
 
-        # Directly apply GT TF to segmentation volume
-        self._apply_gt_tf_to_segmentation_volume()
+        # Directly apply GT TF to reference volume
+        self._apply_gt_tf_to_reference_volume()
 
         # Set state
-        self.state.segmentation_volume_file = str(path)
+        self.state.reference_volume_file = str(path)
 
         # Render
-        self._seg_renderer.AddVolume(self._seg_volume)
+        self._ref_renderer.AddVolume(self._ref_volume)
         self._check_all_loaded()
-        self._seg_renderer.ResetCamera()
-        self._seg_html_view.update(push_camera=True)
-        self._refresh_slice("seg")
+        self._ref_renderer.ResetCamera()
+        assert self._ref_html_view is not None
+        self._ref_html_view.update(push_camera=True)
 
-    def _unload_segmentation_volume(self):
+    def _reset_reference_view(self):
+        # Drop the client's cached wasm handles before the mapper is pruned from
+        # the wasm scene by the next update() (else a watcher-fired crop apply
+        # would invoke RemoveAllClippingPlanes on a dead object id).
+        self.ctrl.crop_sync_teardown("ref")
         # Reset state
-        self.state.segmentation_volume_file = ""
-        self.state.seg_slice_enabled = False
+        self.state.reference_volume_file = ""
+        self.state.ref_crop_enabled = False
         # Reset renderer
-        self._seg_volume.mapper.RemoveAllClippingPlanes()
-        self._seg_renderer.RemoveAllViewProps()
-        self._seg_volume_data = None
-        self._seg_html_view.update()
+        self._ref_renderer.RemoveAllViewProps()
+        self._ref_volume_data.Initialize()
+
+    def _unload_reference_volume(self):
+        self._reset_reference_view()
+        assert self._ref_html_view is not None
+        self._ref_html_view.update()
         self._check_all_loaded()
 
-    def _load_reference_volume(self, path: pathlib.Path) -> None:
-        self._unload_reference_volume()
+    def _load_target_volume(self, path: pathlib.Path) -> None:
+        # Reset without pushing an update: loading issues a single update() below.
+        # A second update() here would let the client coalesce them and emit a
+        # premature `updated` (before the new mapper is deserialized), firing the
+        # crop re-apply against a not-yet-created mapper.
+        self._reset_target_view()
         # Read volume
         reader = vtkNIFTIImageReader(file_name=str(path))
         reader.Update()
@@ -446,59 +447,66 @@ class App(TrameApp):
         scaler.function = f"NIFTI * {reader.rescale_slope} + {reader.rescale_intercept}"
         scaler.input_data = reader.output
         scaler.Update()
-        self._ref_volume_data = scaler.output
-        if self._ref_volume_data is None:
+        self._tgt_volume_data.ShallowCopy(scaler.output)
+        if self._tgt_volume_data.number_of_points == 0:
             return
         self.logger.debug(
-            "Loaded reference volume scalar range [%f, %f] from %s",
-            self._ref_volume_data.scalar_range[0],
-            self._ref_volume_data.scalar_range[1],
+            "Loaded target volume scalar range [%f, %f] from %s",
+            self._tgt_volume_data.scalar_range[0],
+            self._tgt_volume_data.scalar_range[1],
             reader.file_name,
         )
 
-        self._ref_volume.mapper.input_data = self._ref_volume_data
-        if self.state.reference_lut_source == "nn":
+        self._tgt_volume.mapper.input_data = self._tgt_volume_data
+        if self.state.target_lut_source == "nn":
             ctf, otf, gof = self._build_network_transfer_functions(
-                self._ref_volume_data,
+                self._tgt_volume_data,
                 snapshot_lut_in_state=True,
             )
-            self._ref_volume.property.SetColor(ctf)
-            self._ref_volume.property.SetScalarOpacity(otf)
-            self._ref_volume.property.SetGradientOpacity(gof)
-        elif self.state.reference_lut_source == "linear_map":
-            ctf, otf, gof = self._map_ground_truth_lut_to_ref_volume_scalars(
-                self._ref_volume_data,
+            self._tgt_volume.property.SetColor(ctf)
+            self._tgt_volume.property.SetScalarOpacity(otf)
+            self._tgt_volume.property.SetGradientOpacity(gof)
+        elif self.state.target_lut_source == "linear_map":
+            ctf, otf, gof = self._map_ground_truth_lut_to_tgt_volume_scalars(
+                self._tgt_volume_data,
                 snapshot_lut_in_state=True,
             )
-            self._ref_volume.property.SetColor(ctf)
-            self._ref_volume.property.SetScalarOpacity(otf)
-            self._ref_volume.property.SetGradientOpacity(gof)
+            self._tgt_volume.property.SetColor(ctf)
+            self._tgt_volume.property.SetScalarOpacity(otf)
+            self._tgt_volume.property.SetGradientOpacity(gof)
         else:
-            self.logger.error("Unknown reference_lut_source!")
+            self.logger.error("Unknown target_lut_source!")
 
         # Set state
-        self.state.reference_volume_file = str(path)
+        self.state.target_volume_file = str(path)
 
         # Render
-        self._ref_renderer.AddVolume(self._ref_volume)
+        self._tgt_renderer.AddVolume(self._tgt_volume)
         self._check_all_loaded()
-        self._ref_renderer.ResetCamera()
-        self._ref_html_view.update(push_camera=True)
-        self._refresh_slice("ref")
+        self._tgt_renderer.ResetCamera()
+        assert self._tgt_html_view is not None
+        self._tgt_html_view.update(push_camera=True)
 
-    def _unload_reference_volume(self):
+    def _reset_target_view(self):
+        # Drop the client's cached wasm handles before the mapper is pruned from
+        # the wasm scene by the next update() (else a watcher-fired crop apply
+        # would invoke RemoveAllClippingPlanes on a dead object id).
+        self.ctrl.crop_sync_teardown("tgt")
         # Reset state
-        self.state.reference_volume_file = ""
-        self.state.ref_colors = []
-        self.state.ref_opacities = []
-        self.state.ref_gradient_opacities = []
-        self.state.ref_scalar_range = []
-        self.state.ref_slice_enabled = False
+        self.state.target_volume_file = ""
+        self.state.tgt_colors = []
+        self.state.tgt_opacities = []
+        self.state.tgt_gradient_opacities = []
+        self.state.tgt_scalar_range = []
+        self.state.tgt_crop_enabled = False
         # Reset renderer
-        self._ref_volume.mapper.RemoveAllClippingPlanes()
-        self._ref_renderer.RemoveAllViewProps()
-        self._ref_volume_data = None
-        self._ref_html_view.update()
+        self._tgt_renderer.RemoveAllViewProps()
+        self._tgt_volume_data.Initialize()
+
+    def _unload_target_volume(self):
+        self._reset_target_view()
+        assert self._tgt_html_view is not None
+        self._tgt_html_view.update()
         self._check_all_loaded()
 
     def _load_from_config(self, config_path: str) -> None:
@@ -517,19 +525,19 @@ class App(TrameApp):
             else:
                 self.logger.error("transfer_function_file not found: %s", tf)
 
-        if seg := cfg.get("segmentation_volume_file"):
-            path = pathlib.Path(seg)
-            if path.is_file():
-                self._load_segmentation_volume(path)
-            else:
-                self.logger.error("segmentation_volume_file not found: %s", seg)
-
         if ref := cfg.get("reference_volume_file"):
             path = pathlib.Path(ref)
             if path.is_file():
                 self._load_reference_volume(path)
             else:
                 self.logger.error("reference_volume_file not found: %s", ref)
+
+        if tgt := cfg.get("target_volume_file"):
+            path = pathlib.Path(tgt)
+            if path.is_file():
+                self._load_target_volume(path)
+            else:
+                self.logger.error("target_volume_file not found: %s", tgt)
         # auto confirm
         # self.on_confirm_transfer()
 
@@ -550,7 +558,10 @@ class App(TrameApp):
         self.state.allow_transfer = False
         self.state.show_transfer_dialog = False
         self.state.transfer_complete = False
-        self.state.reference_lut_source = "nn"
+        self.state.target_lut_source = "nn"
+        # Lock the tgt crop UI for the duration of the transfer (unlocked once
+        # the final tgt view update lands; see _on_target_view_updated).
+        self.state.tgt_crop_locked = True
         self._queue_task(self._execute_transfer())
 
     # ------------------------------------------------------------------
@@ -569,28 +580,30 @@ class App(TrameApp):
     # Training
     # ------------------------------------------------------------------
 
-    def reset_reference_lut(self):
-        if self.state.reference_lut_source == "nn":
+    def reset_target_lut(self):
+        if self.state.target_lut_source == "nn":
             self._model.load_state_dict(self._model_init_state)
             ctf, otf, gof = self._build_network_transfer_functions(
-                self._ref_volume_data, snapshot_lut_in_state=True
+                self._tgt_volume_data, snapshot_lut_in_state=True
             )
             self.state.allow_transfer = True
-            self._ref_volume.property.SetColor(ctf)
-            self._ref_volume.property.SetScalarOpacity(otf)
-            self._ref_volume.property.SetGradientOpacity(gof)
-            self._ref_html_view.update()
-        elif self.state.reference_lut_source == "linear_map":
-            ctf, otf, gof = self._map_ground_truth_lut_to_ref_volume_scalars(
-                self._ref_volume_data, snapshot_lut_in_state=True
+            self._tgt_volume.property.SetColor(ctf)
+            self._tgt_volume.property.SetScalarOpacity(otf)
+            self._tgt_volume.property.SetGradientOpacity(gof)
+            assert self._tgt_html_view is not None
+            self._tgt_html_view.update()
+        elif self.state.target_lut_source == "linear_map":
+            ctf, otf, gof = self._map_ground_truth_lut_to_tgt_volume_scalars(
+                self._tgt_volume_data, snapshot_lut_in_state=True
             )
             self.state.allow_transfer = True
-            self._ref_volume.property.SetColor(ctf)
-            self._ref_volume.property.SetScalarOpacity(otf)
-            self._ref_volume.property.SetGradientOpacity(gof)
-            self._ref_html_view.update()
+            self._tgt_volume.property.SetColor(ctf)
+            self._tgt_volume.property.SetScalarOpacity(otf)
+            self._tgt_volume.property.SetGradientOpacity(gof)
+            assert self._tgt_html_view is not None
+            self._tgt_html_view.update()
         else:
-            self.logger.error("Unknown reference_lut_source!")
+            self.logger.error("Unknown target_lut_source!")
 
     async def _execute_transfer(self):
         self.logger.debug("Transferring lookup tables using network...")
@@ -624,10 +637,10 @@ class App(TrameApp):
 
         self._transfer_executor_future = loop.run_in_executor(
             None,
-            lambda: transfer_segmentation_lut(
+            lambda: transfer_reference_lut(
                 self._model,
+                tgt_volume=self._tgt_volume_data,
                 ref_volume=self._ref_volume_data,
-                seg_volume=self._seg_volume_data,
                 lut_rgb=self.ground_truth_colors,
                 lut_scalar_alpha=self.ground_truth_opacities,
                 lut_gradient_alpha=self.ground_truth_gradient_opacities,
@@ -645,13 +658,17 @@ class App(TrameApp):
         with self.state:
             self.state.progress_percent = 100
             ctf, otf, gof = self._build_network_transfer_functions(
-                self._ref_volume_data, snapshot_lut_in_state=True
+                self._tgt_volume_data, snapshot_lut_in_state=True
             )
-            self._ref_volume.property.SetColor(ctf)
-            self._ref_volume.property.SetScalarOpacity(otf)
-            self._ref_volume.property.SetGradientOpacity(gof)
-            self._ref_html_view.update()
+            self._tgt_volume.property.SetColor(ctf)
+            self._tgt_volume.property.SetScalarOpacity(otf)
+            self._tgt_volume.property.SetGradientOpacity(gof)
+            assert self._tgt_html_view is not None
+            self._tgt_html_view.update()
             self.state.allow_transfer = False
+            # The tgt crop UI stays locked until this final update lands on the
+            # client, at which point _on_target_view_updated re-enables it.
+            self._tgt_crop_unlock_pending = True
 
         return self._transfer_executor_future
 
@@ -666,12 +683,13 @@ class App(TrameApp):
             self.state.progress_percent = int(progress_percent)
             self.state.training_loss = loss
             ctf, otf, gof = self._build_network_transfer_functions(
-                self._ref_volume_data, snapshot_lut_in_state=True
+                self._tgt_volume_data, snapshot_lut_in_state=True
             )
-            self._ref_volume.property.SetColor(ctf)
-            self._ref_volume.property.SetScalarOpacity(otf)
-            self._ref_volume.property.SetGradientOpacity(gof)
-            self._ref_html_view.update()
+            self._tgt_volume.property.SetColor(ctf)
+            self._tgt_volume.property.SetScalarOpacity(otf)
+            self._tgt_volume.property.SetGradientOpacity(gof)
+            assert self._tgt_html_view is not None
+            self._tgt_html_view.update()
 
     # ------------------------------------------------------------------
     # Helpers
@@ -679,8 +697,8 @@ class App(TrameApp):
 
     def _check_all_loaded(self) -> None:
         ok = (
-            self._seg_volume_data is not None
-            and self._ref_volume_data is not None
+            self._ref_volume_data.number_of_points > 0
+            and self._tgt_volume_data.number_of_points > 0
             and self._gt_ctf.size > 0
             and self._gt_sof.size > 0
             and self._gt_gof.size > 0
@@ -692,7 +710,7 @@ class App(TrameApp):
         self,
         colors: npt.NDArray[np.float64],
         scalar_opacities: npt.NDArray[np.float64],
-        gradient_opacities: npt.NDArray[np.float64],
+        gradient_opacities: npt.NDArray[np.float64] | None,
     ):
         self._gt_ctf.AddRGBPoints(
             numpy_to_vtk(colors[:, 0], deep=1),
@@ -703,56 +721,64 @@ class App(TrameApp):
         for scalar, alpha in scalar_opacities:
             self._gt_sof.AddPoint(scalar, alpha)
 
-        for gradient, alpha in gradient_opacities:
-            self._gt_gof.AddPoint(gradient, alpha)
+        if gradient_opacities is not None:
+            for gradient, alpha in gradient_opacities:
+                self._gt_gof.AddPoint(gradient, alpha)
 
         # Set state
-        self.state.seg_opacities = scalar_opacities.tolist()
-        self.state.seg_colors = [(v, (r, g, b)) for (v, r, g, b) in colors.tolist()]
-        self.state.seg_scalar_range = (
+        self.state.ref_opacities = scalar_opacities.tolist()
+        self.state.ref_colors = [(v, (r, g, b)) for (v, r, g, b) in colors.tolist()]
+        self.state.ref_scalar_range = (
             float(colors[:, 0].min()),
             float(colors[:, 0].max()),
         )
 
-    def _apply_gt_tf_to_segmentation_volume(self) -> None:
-        self._seg_volume.property.SetColor(self._gt_ctf)
-        self._seg_volume.property.SetScalarOpacity(self._gt_sof)
-        self._seg_volume.property.SetGradientOpacity(self._gt_gof)
+    def _apply_gt_tf_to_reference_volume(self) -> None:
+        self._ref_volume.property.SetColor(self._gt_ctf)
+        self._ref_volume.property.SetScalarOpacity(self._gt_sof)
+        self._ref_volume.property.SetGradientOpacity(self._gt_gof)
 
-    def _map_ground_truth_lut_to_ref_volume_scalars(
+    def _map_ground_truth_lut_to_tgt_volume_scalars(
         self, volume: vtkImageData, snapshot_lut_in_state=False
     ) -> tuple:
-        ref_scalar_range = volume.scalar_range
+        tgt_scalar_range = volume.scalar_range
+        tgt_scalar_span = tgt_scalar_range[1] - tgt_scalar_range[0]
+        ref_scalar_range = self._ref_volume_data.scalar_range
         ref_scalar_span = ref_scalar_range[1] - ref_scalar_range[0]
-        seg_scalar_range = self._seg_volume_data.scalar_range
-        seg_scalar_span = seg_scalar_range[1] - seg_scalar_range[0]
 
-        seg_grad_mag_max = compute_gradient_magnitude(
-            vtk_image_to_numpy(self._seg_volume_data), self._seg_volume_data.spacing
-        ).max()
-        ref_grad_mag_max = compute_gradient_magnitude(
-            vtk_image_to_numpy(volume), volume.spacing
-        ).max()
+        ref_grad_mag_max = (
+            compute_gradient_magnitude(
+                load_vtk_image_to_tensor(self._ref_volume_data),
+                self._ref_volume_data.spacing,
+            )
+            .max()
+            .item()
+        )
+        tgt_grad_mag_max = (
+            compute_gradient_magnitude(load_vtk_image_to_tensor(volume), volume.spacing)
+            .max()
+            .item()
+        )
         new_rgb = self.ground_truth_colors.copy()
         new_alpha = self.ground_truth_opacities.copy()
         new_grad_alpha = self.ground_truth_gradient_opacities.copy()
-        new_rgb[:, 0] -= seg_scalar_range[0]
-        new_rgb[:, 0] /= seg_scalar_span
-        new_rgb[:, 0] *= ref_scalar_span
-        new_rgb[:, 0] += ref_scalar_range[0]
-        new_alpha[:, 0] -= seg_scalar_range[0]
-        new_alpha[:, 0] /= seg_scalar_span
-        new_alpha[:, 0] *= ref_scalar_span
-        new_alpha[:, 0] += ref_scalar_range[0]
-        new_grad_alpha[:, 0] *= ref_grad_mag_max / seg_grad_mag_max
+        new_rgb[:, 0] -= ref_scalar_range[0]
+        new_rgb[:, 0] /= ref_scalar_span
+        new_rgb[:, 0] *= tgt_scalar_span
+        new_rgb[:, 0] += tgt_scalar_range[0]
+        new_alpha[:, 0] -= ref_scalar_range[0]
+        new_alpha[:, 0] /= ref_scalar_span
+        new_alpha[:, 0] *= tgt_scalar_span
+        new_alpha[:, 0] += tgt_scalar_range[0]
+        new_grad_alpha[:, 0] *= tgt_grad_mag_max / ref_grad_mag_max
 
         if snapshot_lut_in_state:
             (
-                self.state.ref_colors,
-                self.state.ref_opacities,
-                self.state.ref_gradient_opacities,
+                self.state.tgt_colors,
+                self.state.tgt_opacities,
+                self.state.tgt_gradient_opacities,
             ) = convert_lut_to_state_format(new_rgb, new_alpha, new_grad_alpha)
-            self.state.ref_scalar_range = list(volume.scalar_range)
+            self.state.tgt_scalar_range = list(volume.scalar_range)
         ctf = vtkDiscretizableColorTransferFunction(allow_duplicate_scalars=True)
         ctf.AddRGBPoints(
             numpy_to_vtk(new_rgb[:, 0], deep=1),
@@ -777,10 +803,10 @@ class App(TrameApp):
             self._model, volume, n_points=self.state.n_lut_sampling_points
         )
         if snapshot_lut_in_state:
-            self.state.ref_colors = colors
-            self.state.ref_opacities = opacities
-            self.state.ref_gradient_opacities = gradient_opacities
-            self.state.ref_scalar_range = list(volume.scalar_range)
+            self.state.tgt_colors = colors
+            self.state.tgt_opacities = opacities
+            self.state.tgt_gradient_opacities = gradient_opacities
+            self.state.tgt_scalar_range = list(volume.scalar_range)
 
         scalars_np = np.array([s for s, _ in colors], dtype=np.float64)
         rgb_np = np.array([list(rgb) for _, rgb in colors], dtype=np.float64)
@@ -820,147 +846,100 @@ class App(TrameApp):
         volume_property.SetScalarOpacityUnitDistance(1.754420659713536)
         volume_property.SetScatteringAnisotropy(0)
 
-        # Slice/crop plane. Attached to the mapper on demand by _refresh_slice().
-        slice_plane = vtkPlane()
+        # Slice/crop plane. Attached to the mapper on demand.
+        crop_plane = vtkPlane()
 
-        return window, renderer, volume_actor, slice_plane
+        return window, renderer, volume_actor, crop_plane
 
     # ------------------------------------------------------------------
-    # Slice / crop plane
+    # Linked views (client-side camera + slice/crop plane sync)
     # ------------------------------------------------------------------
 
-    def _slice_targets(self, key: str):
-        """Return (volume_data, volume_actor, slice_plane, html_view) for a view."""
-        if key == "seg":
-            return (
-                self._seg_volume_data,
-                self._seg_volume,
-                self._seg_plane,
-                self._seg_html_view,
-            )
-        return (
-            self._ref_volume_data,
-            self._ref_volume,
-            self._ref_plane,
-            self._ref_html_view,
+    def _apply_crop_client(self, key: str, relink: bool = False) -> None:
+        """Forward a view's wasm handles + volume bounds to the client and have
+        it (re)apply the clipping plane there. All ongoing crop changes are
+        handled in the browser via state watchers. When ``relink`` is set and the
+        views are linked, the client re-adopts the reference crop first.
+        See color_transfer_function_designer.app.module.serve.crop.js.
+        """
+        if key == "ref":
+            html_view, mapper = self._ref_html_view, self._ref_volume.mapper
+            plane_id, volume_data = self._ref_plane_wasm_id, self._ref_volume_data
+        else:
+            html_view, mapper = self._tgt_html_view, self._tgt_volume.mapper
+            plane_id, volume_data = self._tgt_plane_wasm_id, self._tgt_volume_data
+        if html_view is None or volume_data is None or plane_id is None:
+            return
+        self.ctrl.crop_sync_init(
+            {
+                "key": key,
+                "refName": html_view.ref_name,
+                "mapperId": html_view.get_wasm_id(mapper),
+                "planeId": plane_id,
+                "bounds": list(volume_data.bounds),
+                "relink": relink,
+            }
         )
 
-    def _refresh_slice(self, key: str) -> None:
-        """Sync a view's clipping plane to the current slice toolbar state.
+    def _on_reference_view_updated(self, **_):
+        self._init_reference_view_camera_sync()
+        # Re-apply the clipping plane whenever the ref wasm scene (re)syncs --
+        # after a volume (re)load and, crucially, after a page reload, where the
+        # client re-instantiates a fresh scene with no clip. applyCrop is
+        # idempotent, so re-running it on routine updates is harmless.
+        if self._ref_volume_data.number_of_points > 0:
+            self._apply_crop_client("ref")
 
-        The plane is axis-aligned along the selected direction. The mapper keeps
-        the side the normal points toward, so the configured direction is the
-        cropped half (e.g. "+x" crops voxels on the +x side, keeps the -x side).
+    def _on_target_view_updated(self, **_):
+        self._init_target_view_camera_sync()
+        if self._tgt_crop_unlock_pending:
+            # The final transfer update has landed: re-enable the tgt crop UI and
+            # re-apply the crop (transfer updates wiped the client clip). No more
+            # tgt updates are in flight, so there is nothing left to race.
+            self._tgt_crop_unlock_pending = False
+            self.state.tgt_crop_locked = False
+            self._apply_crop_client("tgt", relink=self.state.crop_linked)
+            return
+        # While a transfer runs the tgt view is repeatedly re-update()d; skip the
+        # crop apply to avoid racing those deserializations (the unlock above
+        # re-applies once the transfer settles). Otherwise re-apply on every sync
+        # -- volume (re)load and page reload alike (see _on_reference_view_updated).
+        if self.state.tgt_crop_locked:
+            return
+        if self._tgt_volume_data.number_of_points > 0:
+            self._apply_crop_client("tgt")
+
+    def _init_reference_view_camera_sync(self, **_):
+        """Hand the renderer wasm ids to the client once the reference view is ready.
+        Fires on every LocalView ``updated`` event.
         """
-        volume_data, actor, plane, html_view = self._slice_targets(key)
-        if html_view is None:
+        if self._ref_renderer_wasm_id is None or self._tgt_renderer_wasm_id is None:
             return
-
-        mapper = actor.mapper
-        mapper.RemoveAllClippingPlanes()
-
-        enabled = getattr(self.state, f"{key}_slice_enabled")
-        if enabled and volume_data is not None:
-            direction = getattr(self.state, f"{key}_slice_direction")
-            percent = float(getattr(self.state, f"{key}_slice_position"))
-            axis = self._SLICE_AXIS[direction]
-            bounds = volume_data.bounds
-            lo, hi = bounds[2 * axis], bounds[2 * axis + 1]
-            origin = [
-                0.5 * (bounds[0] + bounds[1]),
-                0.5 * (bounds[2] + bounds[3]),
-                0.5 * (bounds[4] + bounds[5]),
-            ]
-            origin[axis] = lo + (percent / 100.0) * (hi - lo)
-            plane.SetOrigin(*origin)
-            plane.SetNormal(*self._SLICE_NORMALS[direction])
-            mapper.AddClippingPlane(plane)
-
-        html_view.update()
-
-    def _mirror_slice_state(self, src: str, dst: str) -> None:
-        """Copy the slice toolbar state of one view onto the other.
-
-        Setting the destination state variables triggers that view's own change
-        handler, which refreshes its clipping plane. trame skips unchanged values
-        so mirroring back from the destination is a no-op (no feedback loop).
-        """
-        for prop in ("enabled", "direction", "position"):
-            setattr(
-                self.state,
-                f"{dst}_slice_{prop}",
-                getattr(self.state, f"{src}_slice_{prop}"),
-            )
-
-    # ------------------------------------------------------------------
-    # Linked cameras
-    # ------------------------------------------------------------------
-
-    _CAMERA_ECHO_MUTE_S = 0.2
-
-    @staticmethod
-    def _apply_camera_state(camera, state: dict) -> None:
-        """Apply a serialized vtkCamera state (from the client) onto a camera."""
-        if "Position" not in state:
-            return
-        camera.SetPosition(*state["Position"])
-        camera.SetFocalPoint(*state["FocalPoint"])
-        camera.SetViewUp(*state["ViewUp"])
-        camera.SetViewAngle(state["ViewAngle"])
-        camera.SetParallelScale(state["ParallelScale"])
-        camera.SetParallelProjection(state["ParallelProjection"])
-
-    @staticmethod
-    def _copy_camera(src, dst) -> None:
-        """Copy orientation/zoom from one camera to another (clipping excluded)."""
-        dst.SetPosition(src.GetPosition())
-        dst.SetFocalPoint(src.GetFocalPoint())
-        dst.SetViewUp(src.GetViewUp())
-        dst.SetViewAngle(src.GetViewAngle())
-        dst.SetParallelScale(src.GetParallelScale())
-        dst.SetParallelProjection(src.GetParallelProjection())
-
-    def _camera_view(self, key: str):
-        """Return (renderer, html_view) for a view key."""
-        if key == "seg":
-            return self._seg_renderer, self._seg_html_view
-        return self._ref_renderer, self._ref_html_view
-
-    def _sync_camera_to(self, src: str, dst: str) -> None:
-        """Mirror the src view's camera onto the dst view and push the update."""
-        src_renderer, _ = self._camera_view(src)
-        dst_renderer, dst_view = self._camera_view(dst)
-        if dst_view is None:
-            return
-        self._copy_camera(
-            src_renderer.GetActiveCamera(), dst_renderer.GetActiveCamera()
+        assert self._ref_html_view is not None
+        assert self._tgt_html_view is not None
+        self.ctrl.camera_sync_init(
+            {
+                "srcRefName": self._ref_html_view.ref_name,
+                "dstRefName": self._tgt_html_view.ref_name,
+                "srcRendererId": self._ref_renderer_wasm_id,
+            }
         )
-        # Each volume has its own bounds, so refit the near/far planes locally.
-        dst_renderer.ResetCameraClippingRange()
-        self._camera_sync_mute[dst] = time.monotonic() + self._CAMERA_ECHO_MUTE_S
-        dst_renderer.render_window.Render()
-        dst_view.update(push_camera=True)
 
-    def _on_camera_event(self, key: str, camera_state: dict) -> None:
-        """Handle a client-side camera change for a view.
-
-        The server-side camera is always kept in sync with its client so that
-        enabling the link later mirrors the correct view. When linked, the change
-        is forwarded to the other view unless it is the echo of our own push.
+    def _init_target_view_camera_sync(self, **_):
+        """Hand the renderer wasm ids to the client once the target view is ready.
+        Fires on every LocalView ``updated`` event.
         """
-        renderer, _ = self._camera_view(key)
-        self._apply_camera_state(renderer.GetActiveCamera(), camera_state)
-        if not self.state.camera_linked:
+        if self._ref_renderer_wasm_id is None or self._tgt_renderer_wasm_id is None:
             return
-        if time.monotonic() < self._camera_sync_mute[key]:
-            return
-        self._sync_camera_to(key, "ref" if key == "seg" else "seg")
-
-    def on_seg_camera_changed(self, camera_state):
-        self._on_camera_event("seg", camera_state)
-
-    def on_ref_camera_changed(self, camera_state):
-        self._on_camera_event("ref", camera_state)
+        assert self._ref_html_view is not None
+        assert self._tgt_html_view is not None
+        self.ctrl.camera_sync_init(
+            {
+                "srcRefName": self._tgt_html_view.ref_name,
+                "dstRefName": self._ref_html_view.ref_name,
+                "srcRendererId": self._tgt_renderer_wasm_id,
+            }
+        )
 
     # ------------------------------------------------------------------
     # Editor node callbacks (stubs)
@@ -969,7 +948,8 @@ class App(TrameApp):
     def on_opacity_node_modified(self, _index, _node):
         self.logger.debug("Opacity node %d modified to %s", _index, str(_node))
         self._gt_sof.SetNodeValue(_index, [*_node, 0.5, 0.0])
-        self._seg_html_view.update()
+        assert self._ref_html_view is not None
+        self._ref_html_view.update()
         self.state.allow_transfer = True
 
     def on_opacity_node_added(self, _index, _node):
@@ -981,7 +961,8 @@ class App(TrameApp):
     def on_color_node_modified(self, _index, _node):
         self.logger.debug("Color node %d modified to %s", _index, str(_node))
         self._gt_ctf.SetNodeValue(_index, [_node[0], *_node[1], 0.5, 0.0])
-        self._seg_html_view.update()
+        assert self._ref_html_view is not None
+        self._ref_html_view.update()
         self.state.allow_transfer = True
 
     def on_color_node_added(self, _index, _node):
@@ -994,46 +975,20 @@ class App(TrameApp):
     # Pages
     # ------------------------------------------------------------------
 
-    def _seg_color_opacity_editor(self):
+    def _ref_color_opacity_editor(self):
         return color_opacity_editor.ColorOpacityEditor(
             classes="align-center",
             v_if=("transfer_function_file.length > 0",),
             style="width: 100%; max-height: 150px;",
-            v_model_colorNodes="seg_colors",
-            v_model_opacityNodes=("seg_opacities",),
-            scalar_range=("seg_scalar_range",),
+            v_model_colorNodes="ref_colors",
+            v_model_opacityNodes=("ref_opacities",),
+            scalar_range=("ref_scalar_range",),
             opacity_node_modified=(self.on_opacity_node_modified, "$event"),
             opacity_node_added=(self.on_opacity_node_added, "$event"),
             opacity_node_removed=(self.on_opacity_node_removed, "[$event]"),
             color_node_modified=(self.on_color_node_modified, "$event"),
             color_node_added=(self.on_color_node_added, "$event"),
             color_node_removed=(self.on_color_node_removed, "[$event]"),
-            histograms=("seg_histograms",),
-            histograms_range=("seg_hist_y_range",),
-            show_histograms=("show_histograms",),
-            histograms_color=("histograms_color", [0, 0, 0, 0.25]),
-            background_shape=("background_shape",),
-            background_opacity=("background_opacity",),
-            handle_radius=7,
-            line_width=2,
-            viewport_padding=("viewport_padding", [8, 8]),
-            handle_color=("handle_color", [0.125, 0.125, 0.125, 1]),
-            handle_border_color=("handle_border_color", [0.75, 0.75, 0.75, 1]),
-        )
-
-    def _ref_color_opacity_editor(self):
-        return color_opacity_editor.ColorOpacityEditor(
-            classes="align-center",
-            style="width: 100%; max-height: 150px;",
-            v_model_colorNodes="ref_colors",
-            v_model_opacityNodes=("ref_opacities",),
-            scalar_range=("ref_scalar_range",),
-            opacity_node_modified=(lambda _, __: None, "$event"),
-            opacity_node_added=(lambda _, __: None, "$event"),
-            opacity_node_removed=(lambda _: None, "[$event]"),
-            color_node_modified=(lambda _, __: None, "$event"),
-            color_node_added=(lambda _, __: None, "$event"),
-            color_node_removed=(lambda _: None, "[$event]"),
             histograms=("ref_histograms",),
             histograms_range=("ref_hist_y_range",),
             show_histograms=("show_histograms",),
@@ -1047,31 +1002,59 @@ class App(TrameApp):
             handle_border_color=("handle_border_color", [0.75, 0.75, 0.75, 1]),
         )
 
-    def _slice_plane_toolbar(self, key: str, volume_state: str):
-        """Toolbar to enable/orient/position the slice-crop plane for a view.
+    def _tgt_color_opacity_editor(self):
+        return color_opacity_editor.ColorOpacityEditor(
+            classes="align-center",
+            style="width: 100%; max-height: 150px;",
+            v_model_colorNodes="tgt_colors",
+            v_model_opacityNodes=("tgt_opacities",),
+            scalar_range=("tgt_scalar_range",),
+            opacity_node_modified=(lambda _, __: None, "$event"),
+            opacity_node_added=(lambda _, __: None, "$event"),
+            opacity_node_removed=(lambda _: None, "[$event]"),
+            color_node_modified=(lambda _, __: None, "$event"),
+            color_node_added=(lambda _, __: None, "$event"),
+            color_node_removed=(lambda _: None, "[$event]"),
+            histograms=("tgt_histograms",),
+            histograms_range=("tgt_hist_y_range",),
+            show_histograms=("show_histograms",),
+            histograms_color=("histograms_color", [0, 0, 0, 0.25]),
+            background_shape=("background_shape",),
+            background_opacity=("background_opacity",),
+            handle_radius=7,
+            line_width=2,
+            viewport_padding=("viewport_padding", [8, 8]),
+            handle_color=("handle_color", [0.125, 0.125, 0.125, 1]),
+            handle_border_color=("handle_border_color", [0.75, 0.75, 0.75, 1]),
+        )
 
-        Shared by both LocalViews; ``key`` is "seg" or "ref" and ``volume_state``
+    def _crop_plane_toolbar(self, key: str, volume_state: str):
+        """Toolbar to enable/orient/position the crop plane for a view.
+
+        Shared by both LocalViews; ``key`` is "ref" or "tgt" and ``volume_state``
         is the state variable holding that view's loaded file path.
         """
-        enabled = f"{key}_slice_enabled"
-        direction = f"{key}_slice_direction"
-        position = f"{key}_slice_position"
+        enabled = f"{key}_crop_enabled"
+        direction = f"{key}_crop_direction"
+        position = f"{key}_crop_position"
+        # The tgt crop UI is locked while a transfer runs (see tgt_crop_locked).
+        lock_expr = "tgt_crop_locked" if key == "tgt" else "false"
         with vuetify3.VToolbar(
             density="compact",
             color="transparent",
             flat=True,
             v_show=(f"{volume_state}.length > 0",),
         ):
-            # Link toggles shared by both views: mirror the slice plane / camera.
+            # Link toggles shared by both views: mirror the crop plane / camera.
             with vuetify3.VBtn(
                 size="small",
                 prepend_icon=(
-                    "slice_linked ? 'mdi-link-variant' : 'mdi-link-variant-off'",
+                    "crop_linked ? 'mdi-link-variant' : 'mdi-link-variant-off'",
                 ),
                 density="compact",
-                variant=("slice_linked ? 'tonal' : 'text'",),
-                color=("slice_linked ? 'primary' : ''",),
-                click="slice_linked = !slice_linked",
+                variant=("crop_linked ? 'tonal' : 'text'",),
+                color=("crop_linked ? 'primary' : ''",),
+                click="crop_linked = !crop_linked",
                 classes="ml-2",
             ):
                 vuetify3.VTooltip(
@@ -1100,6 +1083,7 @@ class App(TrameApp):
                 density="compact",
                 hide_details=True,
                 inset=True,
+                disabled=(lock_expr,),
                 classes="flex-grow-0 mx-2",
             )
             with vuetify3.VBtnToggle(
@@ -1108,7 +1092,7 @@ class App(TrameApp):
                 density="compact",
                 variant="outlined",
                 divided=True,
-                disabled=(f"!{enabled}",),
+                disabled=(f"!{enabled} || {lock_expr}",),
                 classes="mx-2",
             ):
                 for label, value in self._SLICE_DIRECTIONS:
@@ -1122,7 +1106,7 @@ class App(TrameApp):
                 thumb_label=True,
                 hide_details=True,
                 density="compact",
-                disabled=(f"!{enabled}",),
+                disabled=(f"!{enabled} || {lock_expr}",),
                 classes="mx-2",
             )
 
@@ -1138,7 +1122,7 @@ class App(TrameApp):
                 with vuetify3.VCard():
                     vuetify3.VCardTitle("Transfer transfer function?")
                     vuetify3.VCardText(
-                        f"The network will transfer the provided lookup tables from the segmentation volume to the scalar volume using {self.state.n_epochs} epochs. Proceed?"
+                        f"The network will transfer the provided lookup tables from the reference volume to the scalar volume using {self.state.n_epochs} epochs. Proceed?"
                     )
                     with vuetify3.VCardActions():
                         vuetify3.VSpacer()
@@ -1156,6 +1140,23 @@ class App(TrameApp):
 
             # File dialog
             FileDialog(is_open=False, file_browser=self.file_browser)
+
+            # Client-side camera sync between the two LocalViews.
+            # `camera_sync_init` captures the renderer id for a view and observes its camera for modifications
+            # `camera_sync_once` snaps the views together when linking.
+            self.ctrl.camera_sync_init = client.JSEval(
+                exec="utils.colorTransferFunctionDesignerCamera.setup($event.srcRefName, $event.dstRefName, $event.srcRendererId)",
+            ).exec
+            self.ctrl.camera_sync_once = client.JSEval(
+                exec="utils.colorTransferFunctionDesignerCamera.sync($event.srcRefName, $event.dstRefName)",
+            ).exec
+            self.ctrl.crop_sync_init = client.JSEval(
+                exec="utils.colorTransferFunctionDesignerCrop.setup($event)",
+            ).exec
+            self.ctrl.crop_sync_teardown = client.JSEval(
+                exec="utils.colorTransferFunctionDesignerCrop.teardown($event)",
+            ).exec
+
             with self.ui.drawer:
                 with vuetify3.VCard():
                     vuetify3.VCardTitle("Training")
@@ -1268,12 +1269,12 @@ class App(TrameApp):
                                             "['transfer_function']",
                                         ),
                                     )
-                                self._seg_color_opacity_editor()
+                                self._ref_color_opacity_editor()
                         with vuetify3.VCol(
                             cols="12",
                             md="6",
                             classes="d-flex flex-column",
-                            v_if=("reference_volume_file.length > 0",),
+                            v_if=("target_volume_file.length > 0",),
                         ):
                             with vuetify3.VCard(
                                 variant="outlined",
@@ -1295,53 +1296,12 @@ class App(TrameApp):
                                         size="small",
                                         density="compact",
                                         variant="text",
-                                        click=self.reset_reference_lut,
+                                        click=self.reset_target_lut,
                                     )
-                                self._ref_color_opacity_editor()
+                                self._tgt_color_opacity_editor()
 
                     # Row — 3D views
                     with vuetify3.VRow(classes="flex-grow-1", style="width: 100%"):
-                        with vuetify3.VCol(
-                            cols="12",
-                            md="6",
-                            classes="d-flex flex-column",
-                        ):
-                            with vuetify3.VCard(
-                                variant="outlined",
-                                classes="d-flex flex-grow-1 flex-column",
-                            ):
-                                with vuetify3.VRow(
-                                    classes="flex-shrink-0 justify-end ma-0",
-                                    v_show=("segmentation_volume_file.length > 0",),
-                                ):
-                                    vuetify3.VBtn(
-                                        icon="mdi-close",
-                                        size="small",
-                                        density="compact",
-                                        variant="text",
-                                        click=self._unload_segmentation_volume,
-                                    )
-                                with vuetify3.VRow(
-                                    classes="flex-grow-1 align-center justify-center ma-0",
-                                    v_show=("segmentation_volume_file.length === 0",),
-                                ):
-                                    vuetify3.VBtn(
-                                        text="2. Load a segmentation volume (*.nii.gz)",
-                                        click=(
-                                            self.ctrl.open_file_dialog,
-                                            "['segmentation_volume']",
-                                        ),
-                                    )
-                                self._slice_plane_toolbar(
-                                    "seg", "segmentation_volume_file"
-                                )
-                                self._seg_html_view = vtklocal.LocalView(
-                                    self._seg_wnd,
-                                    # interactive_ratio=1,
-                                    style="width: 100%; min-height: 0;",
-                                    v_show=("segmentation_volume_file.length > 0",),
-                                    camera=(self.on_seg_camera_changed, "[$event]"),
-                                )
                         with vuetify3.VCol(
                             cols="12",
                             md="6",
@@ -1367,21 +1327,76 @@ class App(TrameApp):
                                     v_show=("reference_volume_file.length === 0",),
                                 ):
                                     vuetify3.VBtn(
-                                        text="3. Load the volume with continuous scalar intensities (*.nii.gz)",
+                                        text="2. Load a reference volume (*.nii.gz)",
                                         click=(
                                             self.ctrl.open_file_dialog,
                                             "['reference_volume']",
                                         ),
                                     )
-                                self._slice_plane_toolbar(
-                                    "ref", "reference_volume_file"
-                                )
+                                self._crop_plane_toolbar("ref", "reference_volume_file")
                                 self._ref_html_view = vtklocal.LocalView(
                                     self._ref_wnd,
+                                    ref="ref_view",
                                     # interactive_ratio=1,
                                     style="width: 100%; min-height: 0;",
                                     v_show=("reference_volume_file.length > 0",),
-                                    camera=(self.on_ref_camera_changed, "[$event]"),
+                                    updated=self._on_reference_view_updated,
+                                )
+                                self._ref_renderer_wasm_id = (
+                                    self._ref_html_view.get_wasm_id(self._ref_renderer)
+                                )
+                                self._ref_plane_wasm_id = (
+                                    self._ref_html_view.register_vtk_object(
+                                        self._ref_plane
+                                    )
+                                )
+                        with vuetify3.VCol(
+                            cols="12",
+                            md="6",
+                            classes="d-flex flex-column",
+                        ):
+                            with vuetify3.VCard(
+                                variant="outlined",
+                                classes="d-flex flex-grow-1 flex-column",
+                            ):
+                                with vuetify3.VRow(
+                                    classes="flex-shrink-0 justify-end ma-0",
+                                    v_show=("target_volume_file.length > 0",),
+                                ):
+                                    vuetify3.VBtn(
+                                        icon="mdi-close",
+                                        size="small",
+                                        density="compact",
+                                        variant="text",
+                                        click=self._unload_target_volume,
+                                    )
+                                with vuetify3.VRow(
+                                    classes="flex-grow-1 align-center justify-center ma-0",
+                                    v_show=("target_volume_file.length === 0",),
+                                ):
+                                    vuetify3.VBtn(
+                                        text="3. Load the volume with continuous scalar intensities (*.nii.gz)",
+                                        click=(
+                                            self.ctrl.open_file_dialog,
+                                            "['target_volume']",
+                                        ),
+                                    )
+                                self._crop_plane_toolbar("tgt", "target_volume_file")
+                                self._tgt_html_view = vtklocal.LocalView(
+                                    self._tgt_wnd,
+                                    ref="tgt_view",
+                                    # interactive_ratio=1,
+                                    style="width: 100%; min-height: 0;",
+                                    v_show=("target_volume_file.length > 0",),
+                                    updated=self._on_target_view_updated,
+                                )
+                                self._tgt_renderer_wasm_id = (
+                                    self._tgt_html_view.get_wasm_id(self._tgt_renderer)
+                                )
+                                self._tgt_plane_wasm_id = (
+                                    self._tgt_html_view.register_vtk_object(
+                                        self._tgt_plane
+                                    )
                                 )
 
                     # Row — actions
@@ -1394,7 +1409,7 @@ class App(TrameApp):
                                     classes="d-flex",
                                 ):
                                     with vuetify3.VBtnToggle(
-                                        v_model=("reference_lut_source",),
+                                        v_model=("target_lut_source",),
                                         mandatory=True,
                                         rounded=True,
                                         border=True,

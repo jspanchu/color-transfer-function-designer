@@ -15,6 +15,7 @@ async def real_main(server=None):
     if server is None:
         server = get_server(server)
 
+    assert server is not None
     server.cli.add_argument(
         "--data-directory",
         help="Path to show in the file browser by default",
@@ -23,7 +24,7 @@ async def real_main(server=None):
     )
     server.cli.add_argument(  # pyright: ignore[reportOptionalMemberAccess]
         "--config",
-        help="Path to a JSON file with default seg_file, tf_file, ref_file paths",
+        help="Path to a JSON file with default ref_file, tf_file, tgt_file paths",
         default=None,
         type=str,
     )

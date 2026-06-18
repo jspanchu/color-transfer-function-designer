@@ -40,6 +40,7 @@ class Embedder(torch.nn.Module):
 
     def forward(self, inputs):
         parts = [inputs] if self.include_input else []
+        assert isinstance(self.freq_bands, torch.Tensor)
         for freq in self.freq_bands:
             for p_fn in self.periodic_fns:
                 parts.append(p_fn(inputs * freq))
