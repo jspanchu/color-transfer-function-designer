@@ -1,5 +1,4 @@
 (() => {
-  let cameraSyncInitialized = false;
   let suppressCameraSync = false;
   const viewObservers = new Map();
 
