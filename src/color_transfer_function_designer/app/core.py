@@ -178,11 +178,6 @@ class App(TrameApp):
         self._ref_plane_wasm_id = None
         self._tgt_plane_wasm_id = None
 
-        # Set after a volume (re)loads so the next view `updated` event re-applies
-        # that view's clipping plane on the client (loading resets the wasm mapper).
-        self._ref_crop_apply_pending = False
-        self._tgt_crop_apply_pending = False
-
         # Set when a transfer finishes so the next tgt view `updated` event
         # unlocks the tgt crop UI and re-applies the (transfer-wiped) crop.
         self._tgt_crop_unlock_pending = False
@@ -415,8 +410,6 @@ class App(TrameApp):
         self._ref_renderer.AddVolume(self._ref_volume)
         self._check_all_loaded()
         self._ref_renderer.ResetCamera()
-        # Re-apply the crop plane client-side once the wasm mapper has synced.
-        self._ref_crop_apply_pending = True
         assert self._ref_html_view is not None
         self._ref_html_view.update(push_camera=True)
 
@@ -491,8 +484,6 @@ class App(TrameApp):
         self._tgt_renderer.AddVolume(self._tgt_volume)
         self._check_all_loaded()
         self._tgt_renderer.ResetCamera()
-        # Re-apply the crop plane client-side once the wasm mapper has synced.
-        self._tgt_crop_apply_pending = True
         assert self._tgt_html_view is not None
         self._tgt_html_view.update(push_camera=True)
 
@@ -892,15 +883,15 @@ class App(TrameApp):
 
     def _on_reference_view_updated(self, **_):
         self._init_reference_view_camera_sync()
-        if self._ref_crop_apply_pending:
-            self._ref_crop_apply_pending = False
+        # Re-apply the clipping plane whenever the ref wasm scene (re)syncs --
+        # after a volume (re)load and, crucially, after a page reload, where the
+        # client re-instantiates a fresh scene with no clip. applyCrop is
+        # idempotent, so re-running it on routine updates is harmless.
+        if self._ref_volume_data.number_of_points > 0:
             self._apply_crop_client("ref")
 
     def _on_target_view_updated(self, **_):
         self._init_target_view_camera_sync()
-        if self._tgt_crop_apply_pending:
-            self._tgt_crop_apply_pending = False
-            self._apply_crop_client("tgt")
         if self._tgt_crop_unlock_pending:
             # The final transfer update has landed: re-enable the tgt crop UI and
             # re-apply the crop (transfer updates wiped the client clip). No more
@@ -908,6 +899,15 @@ class App(TrameApp):
             self._tgt_crop_unlock_pending = False
             self.state.tgt_crop_locked = False
             self._apply_crop_client("tgt", relink=self.state.crop_linked)
+            return
+        # While a transfer runs the tgt view is repeatedly re-update()d; skip the
+        # crop apply to avoid racing those deserializations (the unlock above
+        # re-applies once the transfer settles). Otherwise re-apply on every sync
+        # -- volume (re)load and page reload alike (see _on_reference_view_updated).
+        if self.state.tgt_crop_locked:
+            return
+        if self._tgt_volume_data.number_of_points > 0:
+            self._apply_crop_client("tgt")
 
     def _init_reference_view_camera_sync(self, **_):
         """Hand the renderer wasm ids to the client once the reference view is ready.
