@@ -170,6 +170,9 @@ class App(TrameApp):
         # populated when the LocalViews are created in _generate_ui().
         self.state.crop_linked = False
         self.state.camera_linked = False
+        # While a transfer runs the tgt view is repeatedly re-`update()`d, which
+        # would race a client-side crop apply; lock the tgt crop UI meanwhile.
+        self.state.tgt_crop_locked = False
         self._ref_renderer_wasm_id = None
         self._tgt_renderer_wasm_id = None
         self._ref_plane_wasm_id = None
@@ -179,6 +182,10 @@ class App(TrameApp):
         # that view's clipping plane on the client (loading resets the wasm mapper).
         self._ref_crop_apply_pending = False
         self._tgt_crop_apply_pending = False
+
+        # Set when a transfer finishes so the next tgt view `updated` event
+        # unlocks the tgt crop UI and re-applies the (transfer-wiped) crop.
+        self._tgt_crop_unlock_pending = False
 
         self._generate_ui()
 
@@ -379,7 +386,11 @@ class App(TrameApp):
         self._check_all_loaded()
 
     def _load_reference_volume(self, path: pathlib.Path) -> None:
-        self._unload_reference_volume()
+        # Reset without pushing an update: loading issues a single update() below.
+        # A second update() here would let the client coalesce them and emit a
+        # premature `updated` (before the new mapper is deserialized), firing the
+        # crop re-apply against a not-yet-created mapper.
+        self._reset_reference_view()
         # Read reference volume
         reader = vtkNIFTIImageReader(file_name=str(path))
         reader.Update()
@@ -409,19 +420,30 @@ class App(TrameApp):
         assert self._ref_html_view is not None
         self._ref_html_view.update(push_camera=True)
 
-    def _unload_reference_volume(self):
+    def _reset_reference_view(self):
+        # Drop the client's cached wasm handles before the mapper is pruned from
+        # the wasm scene by the next update() (else a watcher-fired crop apply
+        # would invoke RemoveAllClippingPlanes on a dead object id).
+        self.ctrl.crop_sync_teardown("ref")
         # Reset state
         self.state.reference_volume_file = ""
         self.state.ref_crop_enabled = False
         # Reset renderer
         self._ref_renderer.RemoveAllViewProps()
         self._ref_volume_data.Initialize()
+
+    def _unload_reference_volume(self):
+        self._reset_reference_view()
         assert self._ref_html_view is not None
         self._ref_html_view.update()
         self._check_all_loaded()
 
     def _load_target_volume(self, path: pathlib.Path) -> None:
-        self._unload_target_volume()
+        # Reset without pushing an update: loading issues a single update() below.
+        # A second update() here would let the client coalesce them and emit a
+        # premature `updated` (before the new mapper is deserialized), firing the
+        # crop re-apply against a not-yet-created mapper.
+        self._reset_target_view()
         # Read volume
         reader = vtkNIFTIImageReader(file_name=str(path))
         reader.Update()
@@ -474,7 +496,11 @@ class App(TrameApp):
         assert self._tgt_html_view is not None
         self._tgt_html_view.update(push_camera=True)
 
-    def _unload_target_volume(self):
+    def _reset_target_view(self):
+        # Drop the client's cached wasm handles before the mapper is pruned from
+        # the wasm scene by the next update() (else a watcher-fired crop apply
+        # would invoke RemoveAllClippingPlanes on a dead object id).
+        self.ctrl.crop_sync_teardown("tgt")
         # Reset state
         self.state.target_volume_file = ""
         self.state.tgt_colors = []
@@ -485,6 +511,9 @@ class App(TrameApp):
         # Reset renderer
         self._tgt_renderer.RemoveAllViewProps()
         self._tgt_volume_data.Initialize()
+
+    def _unload_target_volume(self):
+        self._reset_target_view()
         assert self._tgt_html_view is not None
         self._tgt_html_view.update()
         self._check_all_loaded()
@@ -539,6 +568,9 @@ class App(TrameApp):
         self.state.show_transfer_dialog = False
         self.state.transfer_complete = False
         self.state.target_lut_source = "nn"
+        # Lock the tgt crop UI for the duration of the transfer (unlocked once
+        # the final tgt view update lands; see _on_target_view_updated).
+        self.state.tgt_crop_locked = True
         self._queue_task(self._execute_transfer())
 
     # ------------------------------------------------------------------
@@ -643,6 +675,9 @@ class App(TrameApp):
             assert self._tgt_html_view is not None
             self._tgt_html_view.update()
             self.state.allow_transfer = False
+            # The tgt crop UI stays locked until this final update lands on the
+            # client, at which point _on_target_view_updated re-enables it.
+            self._tgt_crop_unlock_pending = True
 
         return self._transfer_executor_future
 
@@ -829,10 +864,11 @@ class App(TrameApp):
     # Linked views (client-side camera + slice/crop plane sync)
     # ------------------------------------------------------------------
 
-    def _apply_crop_client(self, key: str) -> None:
+    def _apply_crop_client(self, key: str, relink: bool = False) -> None:
         """Forward a view's wasm handles + volume bounds to the client and have
         it (re)apply the clipping plane there. All ongoing crop changes are
-        handled in the browser via state watchers.
+        handled in the browser via state watchers. When ``relink`` is set and the
+        views are linked, the client re-adopts the reference crop first.
         See color_transfer_function_designer.app.module.serve.crop.js.
         """
         if key == "ref":
@@ -850,6 +886,7 @@ class App(TrameApp):
                 "mapperId": html_view.get_wasm_id(mapper),
                 "planeId": plane_id,
                 "bounds": list(volume_data.bounds),
+                "relink": relink,
             }
         )
 
@@ -864,6 +901,13 @@ class App(TrameApp):
         if self._tgt_crop_apply_pending:
             self._tgt_crop_apply_pending = False
             self._apply_crop_client("tgt")
+        if self._tgt_crop_unlock_pending:
+            # The final transfer update has landed: re-enable the tgt crop UI and
+            # re-apply the crop (transfer updates wiped the client clip). No more
+            # tgt updates are in flight, so there is nothing left to race.
+            self._tgt_crop_unlock_pending = False
+            self.state.tgt_crop_locked = False
+            self._apply_crop_client("tgt", relink=self.state.crop_linked)
 
     def _init_reference_view_camera_sync(self, **_):
         """Hand the renderer wasm ids to the client once the reference view is ready.
@@ -993,6 +1037,8 @@ class App(TrameApp):
         enabled = f"{key}_crop_enabled"
         direction = f"{key}_crop_direction"
         position = f"{key}_crop_position"
+        # The tgt crop UI is locked while a transfer runs (see tgt_crop_locked).
+        lock_expr = "tgt_crop_locked" if key == "tgt" else "false"
         with vuetify3.VToolbar(
             density="compact",
             color="transparent",
@@ -1037,6 +1083,7 @@ class App(TrameApp):
                 density="compact",
                 hide_details=True,
                 inset=True,
+                disabled=(lock_expr,),
                 classes="flex-grow-0 mx-2",
             )
             with vuetify3.VBtnToggle(
@@ -1045,7 +1092,7 @@ class App(TrameApp):
                 density="compact",
                 variant="outlined",
                 divided=True,
-                disabled=(f"!{enabled}",),
+                disabled=(f"!{enabled} || {lock_expr}",),
                 classes="mx-2",
             ):
                 for label, value in self._SLICE_DIRECTIONS:
@@ -1059,7 +1106,7 @@ class App(TrameApp):
                 thumb_label=True,
                 hide_details=True,
                 density="compact",
-                disabled=(f"!{enabled}",),
+                disabled=(f"!{enabled} || {lock_expr}",),
                 classes="mx-2",
             )
 
@@ -1105,6 +1152,9 @@ class App(TrameApp):
             ).exec
             self.ctrl.crop_sync_init = client.JSEval(
                 exec="utils.colorTransferFunctionDesignerCrop.setup($event)",
+            ).exec
+            self.ctrl.crop_sync_teardown = client.JSEval(
+                exec="utils.colorTransferFunctionDesignerCrop.teardown($event)",
             ).exec
 
             with self.ui.drawer:

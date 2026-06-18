@@ -66,20 +66,26 @@
 
   function onCropChange(key) {
     if (!cropSyncInitialized) return;
+    // While a transfer is running the tgt view is being re-`update()`d on the
+    // server, so any tgt crop op would race that deserialization. Block both the
+    // mirror into tgt and a direct tgt apply until the transfer unlocks it.
+    const tgtLocked = window.trame.state.get("tgt_crop_locked");
     if (window.trame.state.get("crop_linked")) {
-      mirrorCrop(key, key === "ref" ? "tgt" : "ref");
+      const dst = key === "ref" ? "tgt" : "ref";
+      if (!(dst === "tgt" && tgtLocked)) mirrorCrop(key, dst);
     }
-    applyCrop(key);
+    if (!(key === "tgt" && tgtLocked)) applyCrop(key);
   }
 
   function onCropLinkedChange() {
     if (!cropSyncInitialized) return;
+    if (window.trame.state.get("tgt_crop_locked")) return;
     // On linking, make the tgt view adopt the ref crop plane.
     if (window.trame.state.get("crop_linked")) mirrorCrop("ref", "tgt");
   }
 
   window.trame.utils.colorTransferFunctionDesignerCrop = {
-    setup: (payload) => {
+    setup: async (payload) => {
       const cfg = cropViews[payload.key];
       cfg.refName = payload.refName;
       cfg.mapperId = payload.mapperId;
@@ -98,7 +104,21 @@
         );
         window.trame.state.watch(["crop_linked"], () => onCropLinkedChange());
       }
-      applyCrop(payload.key);
+      // `relink` re-adopts the ref crop after a transfer unlocks the tgt view.
+      if (payload.relink && window.trame.state.get("crop_linked")) {
+        mirrorCrop("ref", payload.key);
+      }
+      await applyCrop(payload.key);
+    },
+    // Drop a view's cached wasm handles before its volume is unloaded. The
+    // mapper object is pruned from the wasm scene on the next `update()`, so a
+    // stale handle would otherwise invoke RemoveAllClippingPlanes on a dead id.
+    teardown: (key) => {
+      const cfg = cropViews[key];
+      if (!cfg) return;
+      cfg.mapperId = null;
+      cfg.planeId = null;
+      cfg.bounds = null;
     },
   };
 })();
