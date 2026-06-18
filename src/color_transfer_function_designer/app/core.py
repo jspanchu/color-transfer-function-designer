@@ -24,9 +24,11 @@ from vtkmodules.vtkCommonDataModel import (
     vtkPlane,
 )
 from vtkmodules.vtkFiltersCore import vtkArrayCalculator
+from vtkmodules.vtkImagingCore import vtkImageMapToColors
 from vtkmodules.vtkIOImage import vtkNIFTIImageReader
 from vtkmodules.vtkRenderingCore import (
     vtkDiscretizableColorTransferFunction,
+    vtkImageActor,
     vtkRenderer,
     vtkRenderWindow,
     vtkRenderWindowInteractor,
@@ -107,22 +109,33 @@ class App(TrameApp):
         (
             self._tgt_wnd,
             self._tgt_renderer,
+            self._tgt_image_actor,
             self._tgt_volume,
             self._tgt_plane,
         ) = self._setup_vtk_pipeline()
         (
             self._ref_wnd,
             self._ref_renderer,
+            self._ref_image_actor,
             self._ref_volume,
             self._ref_plane,
         ) = self._setup_vtk_pipeline()
 
         # Ground-truth transfer function data (in reference scalar range)
-        self._gt_ctf = vtkDiscretizableColorTransferFunction(
+        self._ref_ctf = vtkDiscretizableColorTransferFunction(
             allow_duplicate_scalars=True, discretize=True, number_of_values=256
         )
-        self._gt_sof = vtkPiecewiseFunction(allow_duplicate_scalars=True)
-        self._gt_gof = vtkPiecewiseFunction(allow_duplicate_scalars=True)
+        self._ref_sof = vtkPiecewiseFunction(allow_duplicate_scalars=True)
+        self._ref_gof = vtkPiecewiseFunction(allow_duplicate_scalars=True)
+
+        # Target transfer function data (in target scalar range). These are
+        # rebuilt in place by the builder helpers; they are never re-created
+        # outside __init__ so the wasm scene keeps stable object handles.
+        self._tgt_ctf = vtkDiscretizableColorTransferFunction(
+            allow_duplicate_scalars=True
+        )
+        self._tgt_sof = vtkPiecewiseFunction()
+        self._tgt_gof = vtkPiecewiseFunction()
 
         # Input volumes
         self._tgt_volume_data = vtkImageData()
@@ -213,9 +226,7 @@ class App(TrameApp):
                 self._tgt_volume_data,
                 snapshot_lut_in_state=True,
             )
-            self._tgt_volume.property.SetColor(ctf)
-            self._tgt_volume.property.SetScalarOpacity(otf)
-            self._tgt_volume.property.SetGradientOpacity(gof)
+            self._apply_tf_to_tgt_volume(ctf, otf, gof)
             assert self._tgt_html_view is not None
             self._tgt_html_view.update()
         elif self.state.target_lut_source == "linear_map":
@@ -223,9 +234,7 @@ class App(TrameApp):
                 self._tgt_volume_data,
                 snapshot_lut_in_state=True,
             )
-            self._tgt_volume.property.SetColor(ctf)
-            self._tgt_volume.property.SetScalarOpacity(otf)
-            self._tgt_volume.property.SetGradientOpacity(gof)
+            self._apply_tf_to_tgt_volume(ctf, otf, gof)
             assert self._tgt_html_view is not None
             self._tgt_html_view.update()
         else:
@@ -259,8 +268,8 @@ class App(TrameApp):
 
     @property
     def ground_truth_colors(self):
-        data_size = self._gt_ctf.size * 4
-        data_pointer_str = self._gt_ctf.data_pointer
+        data_size = self._ref_ctf.size * 4
+        data_pointer_str = self._ref_ctf.data_pointer
         address_str = data_pointer_str.split("_")[1]
         address = int(address_str, 16)
         buffer = (ctypes.c_double * data_size).from_address(address)
@@ -269,18 +278,18 @@ class App(TrameApp):
     @property
     def ground_truth_opacities(self):
         opacities = []
-        for i in range(self._gt_sof.size):
+        for i in range(self._ref_sof.size):
             values = [0.0] * 4
-            self._gt_sof.GetNodeValue(i, values)
+            self._ref_sof.GetNodeValue(i, values)
             opacities.extend(values[:2])
         return np.array(opacities, dtype=np.float64).reshape(-1, 2)
 
     @property
     def ground_truth_gradient_opacities(self):
         opacities = []
-        for i in range(self._gt_gof.size):
+        for i in range(self._ref_gof.size):
             values = [0.0] * 4
-            self._gt_gof.GetNodeValue(i, values)
+            self._ref_gof.GetNodeValue(i, values)
             opacities.extend(values[:2])
         return np.array(opacities, dtype=np.float64).reshape(-1, 2)
 
@@ -375,9 +384,9 @@ class App(TrameApp):
         self.state.ref_opacities = []
         self.state.ref_scalar_range = []
         self.state.transfer_function_file = ""
-        self._gt_gof.RemoveAllPoints()
-        self._gt_sof.RemoveAllPoints()
-        self._gt_ctf.RemoveAllPoints()
+        self._ref_gof.RemoveAllPoints()
+        self._ref_sof.RemoveAllPoints()
+        self._ref_ctf.RemoveAllPoints()
         self._check_all_loaded()
 
     def _load_reference_volume(self, path: pathlib.Path) -> None:
@@ -399,6 +408,10 @@ class App(TrameApp):
             reader.file_name,
         )
         self._ref_volume.mapper.input_data = self._ref_volume_data
+        self._ref_image_actor.mapper.input_algorithm.input_data = self._ref_volume_data
+        e = self._ref_volume_data.extent
+        mid = (e[4] + e[5]) // 2  # matches default direction "+x"/position 50%
+        self._ref_image_actor.display_extent = [*e[0:4], mid, mid]
 
         # Directly apply GT TF to reference volume
         self._apply_gt_tf_to_reference_volume()
@@ -407,6 +420,7 @@ class App(TrameApp):
         self.state.reference_volume_file = str(path)
 
         # Render
+        self._ref_renderer.AddViewProp(self._ref_image_actor)
         self._ref_renderer.AddVolume(self._ref_volume)
         self._check_all_loaded()
         self._ref_renderer.ResetCamera()
@@ -458,22 +472,22 @@ class App(TrameApp):
         )
 
         self._tgt_volume.mapper.input_data = self._tgt_volume_data
+        self._tgt_image_actor.mapper.input_algorithm.input_data = self._tgt_volume_data
+        e = self._tgt_volume_data.extent
+        mid = (e[4] + e[5]) // 2  # matches default direction "+x"/position 50%
+        self._tgt_image_actor.display_extent = [*e[0:4], mid, mid]
         if self.state.target_lut_source == "nn":
             ctf, otf, gof = self._build_network_transfer_functions(
                 self._tgt_volume_data,
                 snapshot_lut_in_state=True,
             )
-            self._tgt_volume.property.SetColor(ctf)
-            self._tgt_volume.property.SetScalarOpacity(otf)
-            self._tgt_volume.property.SetGradientOpacity(gof)
+            self._apply_tf_to_tgt_volume(ctf, otf, gof)
         elif self.state.target_lut_source == "linear_map":
             ctf, otf, gof = self._map_ground_truth_lut_to_tgt_volume_scalars(
                 self._tgt_volume_data,
                 snapshot_lut_in_state=True,
             )
-            self._tgt_volume.property.SetColor(ctf)
-            self._tgt_volume.property.SetScalarOpacity(otf)
-            self._tgt_volume.property.SetGradientOpacity(gof)
+            self._apply_tf_to_tgt_volume(ctf, otf, gof)
         else:
             self.logger.error("Unknown target_lut_source!")
 
@@ -481,6 +495,7 @@ class App(TrameApp):
         self.state.target_volume_file = str(path)
 
         # Render
+        self._tgt_renderer.AddViewProp(self._tgt_image_actor)
         self._tgt_renderer.AddVolume(self._tgt_volume)
         self._check_all_loaded()
         self._tgt_renderer.ResetCamera()
@@ -555,13 +570,14 @@ class App(TrameApp):
 
     @controller.set("on_confirm_transfer")
     def on_confirm_transfer(self):
-        self.state.allow_transfer = False
-        self.state.show_transfer_dialog = False
-        self.state.transfer_complete = False
-        self.state.target_lut_source = "nn"
-        # Lock the tgt crop UI for the duration of the transfer (unlocked once
-        # the final tgt view update lands; see _on_target_view_updated).
-        self.state.tgt_crop_locked = True
+        with self.state:
+            self.state.allow_transfer = False
+            self.state.show_transfer_dialog = False
+            self.state.transfer_complete = False
+            self.state.target_lut_source = "nn"
+            # Lock the tgt crop UI for the duration of the transfer (unlocked once
+            # the final tgt view update lands; see _on_target_view_updated).
+            self.state.tgt_crop_locked = True
         self._queue_task(self._execute_transfer())
 
     # ------------------------------------------------------------------
@@ -587,9 +603,7 @@ class App(TrameApp):
                 self._tgt_volume_data, snapshot_lut_in_state=True
             )
             self.state.allow_transfer = True
-            self._tgt_volume.property.SetColor(ctf)
-            self._tgt_volume.property.SetScalarOpacity(otf)
-            self._tgt_volume.property.SetGradientOpacity(gof)
+            self._apply_tf_to_tgt_volume(ctf, otf, gof)
             assert self._tgt_html_view is not None
             self._tgt_html_view.update()
         elif self.state.target_lut_source == "linear_map":
@@ -597,9 +611,7 @@ class App(TrameApp):
                 self._tgt_volume_data, snapshot_lut_in_state=True
             )
             self.state.allow_transfer = True
-            self._tgt_volume.property.SetColor(ctf)
-            self._tgt_volume.property.SetScalarOpacity(otf)
-            self._tgt_volume.property.SetGradientOpacity(gof)
+            self._apply_tf_to_tgt_volume(ctf, otf, gof)
             assert self._tgt_html_view is not None
             self._tgt_html_view.update()
         else:
@@ -660,15 +672,13 @@ class App(TrameApp):
             ctf, otf, gof = self._build_network_transfer_functions(
                 self._tgt_volume_data, snapshot_lut_in_state=True
             )
-            self._tgt_volume.property.SetColor(ctf)
-            self._tgt_volume.property.SetScalarOpacity(otf)
-            self._tgt_volume.property.SetGradientOpacity(gof)
+            self._apply_tf_to_tgt_volume(ctf, otf, gof)
             assert self._tgt_html_view is not None
-            self._tgt_html_view.update()
             self.state.allow_transfer = False
             # The tgt crop UI stays locked until this final update lands on the
             # client, at which point _on_target_view_updated re-enables it.
             self._tgt_crop_unlock_pending = True
+            self._tgt_html_view.update()
 
         return self._transfer_executor_future
 
@@ -685,9 +695,8 @@ class App(TrameApp):
             ctf, otf, gof = self._build_network_transfer_functions(
                 self._tgt_volume_data, snapshot_lut_in_state=True
             )
-            self._tgt_volume.property.SetColor(ctf)
-            self._tgt_volume.property.SetScalarOpacity(otf)
-            self._tgt_volume.property.SetGradientOpacity(gof)
+            self._tgt_volume.mapper.Modified()
+            self._apply_tf_to_tgt_volume(ctf, otf, gof)
             assert self._tgt_html_view is not None
             self._tgt_html_view.update()
 
@@ -699,9 +708,9 @@ class App(TrameApp):
         ok = (
             self._ref_volume_data.number_of_points > 0
             and self._tgt_volume_data.number_of_points > 0
-            and self._gt_ctf.size > 0
-            and self._gt_sof.size > 0
-            and self._gt_gof.size > 0
+            and self._ref_ctf.size > 0
+            and self._ref_sof.size > 0
+            and self._ref_gof.size > 0
         )
         self.logger.debug("_check_all_loaded:ok= %d", ok)
         self.state.allow_transfer = ok
@@ -712,18 +721,18 @@ class App(TrameApp):
         scalar_opacities: npt.NDArray[np.float64],
         gradient_opacities: npt.NDArray[np.float64] | None,
     ):
-        self._gt_ctf.AddRGBPoints(
+        self._ref_ctf.AddRGBPoints(
             numpy_to_vtk(colors[:, 0], deep=1),
             numpy_to_vtk(colors[:, 1:], deep=1),
         )
-        self._gt_ctf.Build()
+        self._ref_ctf.Build()
 
         for scalar, alpha in scalar_opacities:
-            self._gt_sof.AddPoint(scalar, alpha)
+            self._ref_sof.AddPoint(scalar, alpha)
 
         if gradient_opacities is not None:
             for gradient, alpha in gradient_opacities:
-                self._gt_gof.AddPoint(gradient, alpha)
+                self._ref_gof.AddPoint(gradient, alpha)
 
         # Set state
         self.state.ref_opacities = scalar_opacities.tolist()
@@ -734,9 +743,18 @@ class App(TrameApp):
         )
 
     def _apply_gt_tf_to_reference_volume(self) -> None:
-        self._ref_volume.property.SetColor(self._gt_ctf)
-        self._ref_volume.property.SetScalarOpacity(self._gt_sof)
-        self._ref_volume.property.SetGradientOpacity(self._gt_gof)
+        self._ref_image_actor.mapper.input_algorithm.lookup_table = self._ref_ctf
+        # self._ref_image_actor.property.lookup_table = self._ref_ctf
+        self._ref_volume.property.SetColor(self._ref_ctf)
+        self._ref_volume.property.SetScalarOpacity(self._ref_sof)
+        self._ref_volume.property.SetGradientOpacity(self._ref_gof)
+
+    def _apply_tf_to_tgt_volume(self, ctf, otf, gof):
+        self._tgt_image_actor.mapper.input_algorithm.lookup_table = ctf
+        # self._tgt_image_actor.property.lookup_table = ctf
+        self._tgt_volume.property.color = ctf
+        self._tgt_volume.property.scalar_opacity = otf
+        self._tgt_volume.property.gradient_opacity = gof
 
     def _map_ground_truth_lut_to_tgt_volume_scalars(
         self, volume: vtkImageData, snapshot_lut_in_state=False
@@ -779,18 +797,21 @@ class App(TrameApp):
                 self.state.tgt_gradient_opacities,
             ) = convert_lut_to_state_format(new_rgb, new_alpha, new_grad_alpha)
             self.state.tgt_scalar_range = list(volume.scalar_range)
-        ctf = vtkDiscretizableColorTransferFunction(allow_duplicate_scalars=True)
+        ctf = self._tgt_ctf
+        ctf.RemoveAllPoints()
         ctf.AddRGBPoints(
             numpy_to_vtk(new_rgb[:, 0], deep=1),
             numpy_to_vtk(new_rgb[:, 1:], deep=1),
         )
         ctf.Build()
 
-        otf = vtkPiecewiseFunction()
+        otf = self._tgt_sof
+        otf.RemoveAllPoints()
         for scalar, alpha in new_alpha:
             otf.AddPoint(float(scalar), float(alpha))
 
-        gof = vtkPiecewiseFunction()
+        gof = self._tgt_gof
+        gof.RemoveAllPoints()
         for gradient, new_alpha in new_grad_alpha:
             gof.AddPoint(float(gradient), float(new_alpha))
         return ctf, otf, gof
@@ -811,18 +832,21 @@ class App(TrameApp):
         scalars_np = np.array([s for s, _ in colors], dtype=np.float64)
         rgb_np = np.array([list(rgb) for _, rgb in colors], dtype=np.float64)
 
-        ctf = vtkDiscretizableColorTransferFunction(allow_duplicate_scalars=True)
+        ctf = self._tgt_ctf
+        ctf.RemoveAllPoints()
         ctf.AddRGBPoints(
             numpy_to_vtk(scalars_np.copy(), deep=1),
             numpy_to_vtk(rgb_np.copy(), deep=1),
         )
         ctf.Build()
 
-        otf = vtkPiecewiseFunction()
+        otf = self._tgt_sof
+        otf.RemoveAllPoints()
         for scalar, alpha in opacities:
             otf.AddPoint(float(scalar), float(alpha))
 
-        gof = vtkPiecewiseFunction()
+        gof = self._tgt_gof
+        gof.RemoveAllPoints()
         for gradient, alpha in gradient_opacities:
             gof.AddPoint(float(gradient), float(alpha))
 
@@ -842,14 +866,25 @@ class App(TrameApp):
 
         volume_property = vtkVolumeProperty()
         volume_actor.SetProperty(volume_property)
-        volume_property.ShadeOff()
         volume_property.SetScalarOpacityUnitDistance(1.754420659713536)
         volume_property.SetScatteringAnisotropy(0)
+
+        image_map_to_colors = vtkImageMapToColors()
+
+        image_actor = vtkImageActor(force_opaque=True)
+        image_actor.mapper.input_connection = image_map_to_colors.output_port
+        image_actor.visibility = False
 
         # Slice/crop plane. Attached to the mapper on demand.
         crop_plane = vtkPlane()
 
-        return window, renderer, volume_actor, crop_plane
+        return (
+            window,
+            renderer,
+            image_actor,
+            volume_actor,
+            crop_plane,
+        )
 
     # ------------------------------------------------------------------
     # Linked views (client-side camera + slice/crop plane sync)
@@ -865,18 +900,22 @@ class App(TrameApp):
         if key == "ref":
             html_view, mapper = self._ref_html_view, self._ref_volume.mapper
             plane_id, volume_data = self._ref_plane_wasm_id, self._ref_volume_data
+            image_actor = self._ref_image_actor
         else:
             html_view, mapper = self._tgt_html_view, self._tgt_volume.mapper
             plane_id, volume_data = self._tgt_plane_wasm_id, self._tgt_volume_data
+            image_actor = self._tgt_image_actor
         if html_view is None or volume_data is None or plane_id is None:
             return
         self.ctrl.crop_sync_init(
             {
+                "bounds": list(volume_data.bounds),
+                "extent": list(volume_data.extent),
+                "imageActorId": html_view.get_wasm_id(image_actor),
                 "key": key,
-                "refName": html_view.ref_name,
                 "mapperId": html_view.get_wasm_id(mapper),
                 "planeId": plane_id,
-                "bounds": list(volume_data.bounds),
+                "refName": html_view.ref_name,
                 "relink": relink,
             }
         )
@@ -894,18 +933,23 @@ class App(TrameApp):
         self._init_target_view_camera_sync()
         if self._tgt_crop_unlock_pending:
             # The final transfer update has landed: re-enable the tgt crop UI and
-            # re-apply the crop (transfer updates wiped the client clip). No more
-            # tgt updates are in flight, so there is nothing left to race.
+            # re-adopt the reference crop if linked. No more tgt updates are in
+            # flight, so there is nothing left to race.
             self._tgt_crop_unlock_pending = False
             self.state.tgt_crop_locked = False
             self._apply_crop_client("tgt", relink=self.state.crop_linked)
             return
-        # While a transfer runs the tgt view is repeatedly re-update()d; skip the
-        # crop apply to avoid racing those deserializations (the unlock above
-        # re-applies once the transfer settles). Otherwise re-apply on every sync
-        # -- volume (re)load and page reload alike (see _on_reference_view_updated).
-        if self.state.tgt_crop_locked:
-            return
+        # Reconcile the client clip on every tgt sync -- volume (re)load, page
+        # reload, and the intermediate updates emitted during a transfer alike
+        # (see _on_reference_view_updated). applyCrop runs *after* this update's
+        # deserialization and begins with RemoveAllClippingPlanes, so it wipes
+        # any stale client-side plane the deserialization re-introduced, then
+        # re-adds one only if tgt crop is enabled. tgt_crop_locked keeps the
+        # crop *UI* read-only during a transfer; it must NOT skip this reconcile
+        # or a crop toggled before the transfer lingers on the intermediate
+        # volume. This server-driven apply fires post-update so it never races a
+        # deserialization (unlike a user toggle, which crop.js gates on
+        # tgt_crop_locked).
         if self._tgt_volume_data.number_of_points > 0:
             self._apply_crop_client("tgt")
 
@@ -947,7 +991,7 @@ class App(TrameApp):
 
     def on_opacity_node_modified(self, _index, _node):
         self.logger.debug("Opacity node %d modified to %s", _index, str(_node))
-        self._gt_sof.SetNodeValue(_index, [*_node, 0.5, 0.0])
+        self._ref_sof.SetNodeValue(_index, [*_node, 0.5, 0.0])
         assert self._ref_html_view is not None
         self._ref_html_view.update()
         self.state.allow_transfer = True
@@ -960,7 +1004,7 @@ class App(TrameApp):
 
     def on_color_node_modified(self, _index, _node):
         self.logger.debug("Color node %d modified to %s", _index, str(_node))
-        self._gt_ctf.SetNodeValue(_index, [_node[0], *_node[1], 0.5, 0.0])
+        self._ref_ctf.SetNodeValue(_index, [_node[0], *_node[1], 0.5, 0.0])
         assert self._ref_html_view is not None
         self._ref_html_view.update()
         self.state.allow_transfer = True
@@ -1388,6 +1432,7 @@ class App(TrameApp):
                                     # interactive_ratio=1,
                                     style="width: 100%; min-height: 0;",
                                     v_show=("target_volume_file.length > 0",),
+                                    # verbosity=({"deserializer": "INFO", "objectManager": "INFO"},),
                                     updated=self._on_target_view_updated,
                                 )
                                 self._tgt_renderer_wasm_id = (
