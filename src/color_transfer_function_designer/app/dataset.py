@@ -165,6 +165,8 @@ class SharedSlicePlaneDataset(torch.utils.data.Dataset):
         unknown_g = extract_2d_slice(
             self._gradient_mags_unknown_lut, axis, slice_plane_idx
         )
+        assert known_s.shape == unknown_s.shape
+        assert known_g.shape == unknown_g.shape
 
         # Random square crop — same origin applied to all four slices so they stay aligned
         H, W = known_s.shape
