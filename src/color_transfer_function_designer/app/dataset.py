@@ -34,6 +34,9 @@ def compute_gradient_magnitude(scalars: torch.Tensor, spacing: tuple) -> torch.T
 
 def extract_2d_slice(volume: torch.Tensor, axis: int, idx: int) -> torch.Tensor:
     """Extract a 2D slice from (nz, ny, nx) volume perpendicular to `axis` at `idx`."""
+    if idx < -volume.shape[axis] or idx >= volume.shape[axis]:
+        msg = f"slice 'idx' ({idx}) out of range for 'axis' {axis} of size {volume.shape[axis]}"
+        raise IndexError(msg)
     index_tensor = torch.tensor([idx]).to(device=volume.device)
     return torch.index_select(volume, axis, index_tensor).squeeze(axis)
 
@@ -137,7 +140,7 @@ class SharedSlicePlaneDataset(torch.utils.data.Dataset):
         self._lut_gradient_alpha = torch.from_numpy(lut_gradient_alpha).to(device)
 
         # Per-axis safe slice index ranges
-        self.dims = image_known_lut.dimensions  # (nz, ny, nx)
+        self.dims = self._scalars_known_lut.shape  # (nz, ny, nx)
         self._axis_ranges = np.zeros((len(self.dims), 2), dtype=np.int64)
         for i, d in enumerate(self.dims):
             lo = int(d * margin)

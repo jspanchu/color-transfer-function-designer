@@ -2,8 +2,22 @@
   let cropSyncInitialized = false;
 
   const cropViews = {
-    ref: { refName: null, mapperId: null, planeId: null, bounds: null },
-    tgt: { refName: null, mapperId: null, planeId: null, bounds: null },
+    ref: {
+      bounds: null,
+      extent: null,
+      imageActorId: null,
+      mapperId: null,
+      planeId: null,
+      refName: null,
+    },
+    tgt: {
+      bounds: null,
+      extent: null,
+      imageActorId: null,
+      mapperId: null,
+      planeId: null,
+      refName: null,
+    },
   };
 
   // Toolbar direction -> clipping-plane normal / axis
@@ -29,6 +43,7 @@
     if (!view) return;
     const mapper = view.getVtkObject(cfg.mapperId);
     const plane = view.getVtkObject(cfg.planeId);
+    const imageActor = view.getVtkObject(cfg.imageActorId);
     if (!mapper || !plane) return;
 
     await mapper.removeAllClippingPlanes();
@@ -36,7 +51,7 @@
       const direction = window.trame.state.get(key + "_crop_direction");
       const percent = Number(window.trame.state.get(key + "_crop_position"));
       const b = cfg.bounds;
-      const axis = CROP_AXIS[direction];
+      const axis = CROP_AXIS[direction]; // 0, 1, 2
       const origin = [
         0.5 * (b[0] + b[1]),
         0.5 * (b[2] + b[3]),
@@ -47,6 +62,20 @@
       await plane.setOrigin(origin);
       await plane.setNormal(CROP_NORMALS[direction]);
       await mapper.addClippingPlane(plane);
+
+      if (imageActor) {
+        const e = cfg.extent; // [x0, x1, y0, y1, z0, z1]
+        const lo = e[2 * axis],
+          hi = e[2 * axis + 1];
+        const idx = Math.round(lo + (percent / 100) * (hi - lo));
+        const de = [...e];
+        de[2 * axis] = idx;
+        de[2 * axis + 1] = idx;
+        await imageActor.setDisplayExtent(...de);
+        await imageActor.setVisibility(1);
+      }
+    } else if (imageActor) {
+      await imageActor.setVisibility(0);
     }
     // Redraw the view client-side.
     view.render();
@@ -87,10 +116,12 @@
   window.trame.utils.colorTransferFunctionDesignerCrop = {
     setup: async (payload) => {
       const cfg = cropViews[payload.key];
-      cfg.refName = payload.refName;
+      cfg.bounds = payload.bounds;
+      cfg.extent = payload.extent;
+      cfg.imageActorId = payload.imageActorId;
       cfg.mapperId = payload.mapperId;
       cfg.planeId = payload.planeId;
-      cfg.bounds = payload.bounds;
+      cfg.refName = payload.refName;
 
       if (!cropSyncInitialized) {
         cropSyncInitialized = true;
@@ -116,9 +147,11 @@
     teardown: (key) => {
       const cfg = cropViews[key];
       if (!cfg) return;
+      cfg.bounds = null;
+      cfg.extent = null;
+      cfg.imageActorId = null;
       cfg.mapperId = null;
       cfg.planeId = null;
-      cfg.bounds = null;
     },
   };
 })();
