@@ -53,6 +53,13 @@ def test_extract_2d_slice_each_axis():
     torch.testing.assert_close(extract_2d_slice(vol, 0, 0), vol[0])
 
 
+@pytest.mark.parametrize("bad_idx", [4, -5])
+def test_extract_2d_slice_out_of_range_raises(bad_idx):
+    vol = torch.zeros(2, 3, 4)
+    with pytest.raises(IndexError):
+        extract_2d_slice(vol, 0, bad_idx)
+
+
 def test_interp1d_clamps_out_of_range():
     xp = torch.tensor([0.0, 1.0, 2.0])
     fp = torch.tensor([0.0, 10.0, 20.0])
