@@ -176,6 +176,9 @@ class App(TrameApp):
             setattr(self.state, f"{key}_crop_enabled", False)
             setattr(self.state, f"{key}_crop_direction", "+x")
             setattr(self.state, f"{key}_crop_position", 50)
+            self.state.client_only(f"{key}_crop_enabled")
+            self.state.client_only(f"{key}_crop_direction")
+            self.state.client_only(f"{key}_crop_position")
 
         # When linked, the crop plane / camera of one view drives the other.
         # Camera sync runs entirely client-side (see CAMERA_SYNC_JS); these wasm
@@ -186,6 +189,10 @@ class App(TrameApp):
         # While a transfer runs the tgt view is repeatedly re-`update()`d, which
         # would race a client-side crop apply; lock the tgt crop UI meanwhile.
         self.state.tgt_crop_locked = False
+        self.state.client_only(
+            "crop_linked",
+            "camera_linked",
+        )
         self._ref_renderer_wasm_id = None
         self._tgt_renderer_wasm_id = None
         self._ref_plane_wasm_id = None
