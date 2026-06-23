@@ -534,21 +534,21 @@ class App(TrameApp):
             return
 
         if tf := cfg.get("transfer_function_file"):
-            path = pathlib.Path(tf)
+            path = pathlib.Path(tf).resolve()
             if path.is_file():
                 self._load_transfer_function(path)
             else:
                 self.logger.error("transfer_function_file not found: %s", tf)
 
         if ref := cfg.get("reference_volume_file"):
-            path = pathlib.Path(ref)
+            path = pathlib.Path(ref).resolve()
             if path.is_file():
                 self._load_reference_volume(path)
             else:
                 self.logger.error("reference_volume_file not found: %s", ref)
 
         if tgt := cfg.get("target_volume_file"):
-            path = pathlib.Path(tgt)
+            path = pathlib.Path(tgt).resolve()
             if path.is_file():
                 self._load_target_volume(path)
             else:
