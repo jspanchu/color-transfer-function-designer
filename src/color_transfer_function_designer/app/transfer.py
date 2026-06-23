@@ -9,6 +9,7 @@ from color_transfer_function_designer.app.dataset import (
     compute_gradient_magnitude,
     load_vtk_image_to_tensor,
 )
+from color_transfer_function_designer.app.losses.ssim import SSIMLoss
 from color_transfer_function_designer.app.model import (
     TransferFunctionNet,
 )
@@ -86,7 +87,13 @@ def transfer_reference_lut(
     n_epochs: int,
     n_slices: int,
     batch_size: int,
-    progress_callback: Callable[[int, int, float, float], None] | None,
+    ssim_alpha: float = 1.0,
+    ssim_beta: float = 1.0,
+    ssim_gamma: float = 1.0,
+    ssim_gaussian_window_size: tuple[int, int] = (11, 11),
+    ssim_gaussian_sigma: tuple[float, float] = (1.5, 1.5),
+    blend_factor_l1_vs_ssim: float = 0.2,
+    progress_callback: Callable[[int, int, float, float], None] | None = None,
     lr: float = 1e-3,
     margin: float = 0.25,
     crop_size: int | None = None,
@@ -124,7 +131,17 @@ def transfer_reference_lut(
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer,
     )
-    criterion = torch.nn.L1Loss()
+    l1 = torch.nn.L1Loss()
+    # Model outputs (sigmoid) and LUT targets are all normalized to [0, 1], so the
+    # SSIM dynamic range is 1.0, not the 8-bit-image default of 255.
+    one_minus_ssim_score = SSIMLoss(
+        alpha=ssim_alpha,
+        beta=ssim_beta,
+        gamma=ssim_gamma,
+        max_channel_value=1.0,
+        gaussian_window_size=ssim_gaussian_window_size,
+        gaussian_sigma=ssim_gaussian_sigma,
+    )
     dataset = SharedSlicePlaneDataset(
         image_known_lut=ref_volume,
         image_unknown_lut=tgt_volume,
@@ -138,12 +155,13 @@ def transfer_reference_lut(
     data_loader = torch.utils.data.DataLoader(dataset, batch_size=batch_size)
     progress = 0.0
     progress_interval = 100.0 / (n_epochs * n_slices / batch_size)
+    xi = blend_factor_l1_vs_ssim
     for epoch in range(n_epochs):
         epoch_loss = 0.0
         for batch_id, (x, y) in enumerate(data_loader):
             optimizer.zero_grad()
-            pred = model(x)
-            loss = criterion(pred, y)
+            pred = model(x)  # x: [N, 2, H, W] -> pred: [N, 5, H, W]
+            loss = xi * l1(pred, y) + (1 - xi) * one_minus_ssim_score(pred, y)
             loss.backward()
             optimizer.step()
             epoch_loss += loss.item()

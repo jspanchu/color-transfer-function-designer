@@ -79,6 +79,7 @@ fail_under = 100
 include = [
     "*/app/model.py",
     "*/app/dataset.py",
+    "*/app/losses/ssim.py",
     "*/app/transfer.py",
     "*/app/utils.py",
 ]

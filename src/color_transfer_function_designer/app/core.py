@@ -213,6 +213,13 @@ class App(TrameApp):
         self.state.n_slices = 1024
         self.state.batch_size = 16
         self.state.learning_rate = 5.0e-3
+        # default loss function parameters
+        self.state.blend_factor_l1_vs_ssim = 0.2
+        self.state.ssim_alpha = 1
+        self.state.ssim_beta = 1
+        self.state.ssim_gamma = 1
+        self.state.ssim_gaussian_window_size = (11, 11)
+        self.state.ssim_gaussian_sigma = (1.5, 1.5)
 
         # default volume parameters
         self.state.slice_plane_margin = 0.25
@@ -666,6 +673,12 @@ class App(TrameApp):
                 n_epochs=self.state.n_epochs,
                 n_slices=self.state.n_slices,
                 batch_size=self.state.batch_size,
+                ssim_alpha=self.state.ssim_alpha,
+                ssim_beta=self.state.ssim_beta,
+                ssim_gamma=self.state.ssim_gamma,
+                ssim_gaussian_window_size=self.state.ssim_gaussian_window_size,
+                ssim_gaussian_sigma=self.state.ssim_gaussian_sigma,
+                blend_factor_l1_vs_ssim=self.state.blend_factor_l1_vs_ssim,
                 progress_callback=transfer_progress_callback,
                 lr=self.state.learning_rate,
                 margin=self.state.slice_plane_margin,
@@ -1242,6 +1255,16 @@ class App(TrameApp):
                         step=(1.0e-6,),
                         precision=(7,),
                         label="Learning rate",
+                        control_variant="split",
+                        classes="mx-2",
+                    )
+                    vuetify3.VNumberInput(
+                        v_model=("blend_factor_l1_vs_ssim",),
+                        min=(0.0,),
+                        max=(1.0,),
+                        step=(0.05,),
+                        precision=(2,),
+                        label="L1/SSIM blend",
                         control_variant="split",
                         classes="mx-2",
                     )
