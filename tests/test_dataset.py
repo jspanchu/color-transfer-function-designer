@@ -86,10 +86,10 @@ def test_apply_lut_torch_shape_and_values():
     out = apply_lut_torch(
         scalar_flat, gradient_flat, lut_rgb, lut_scalar_alpha, lut_gradient_alpha
     )
-    assert out.shape == (3, 5)
+    assert out.shape == (5, 3)  # (channel, sample): R G B scalar_a grad_a
     # midpoint scalar -> R interpolates halfway between 1.0 and 0.0.
-    torch.testing.assert_close(out[1, 0], torch.tensor(0.5))
-    torch.testing.assert_close(out[:, 3], torch.tensor([0.0, 0.5, 1.0]))
+    torch.testing.assert_close(out[0, 1], torch.tensor(0.5))
+    torch.testing.assert_close(out[3, :], torch.tensor([0.0, 0.5, 1.0]))
 
 
 def _dataset(ref, tgt, luts, **kwargs):
@@ -138,8 +138,8 @@ def test_dataset_getitem_shapes(
         crop_size=4,
     )
     model_inputs, model_outputs = ds[0]
-    assert model_inputs.shape == (16, 2)  # 4x4 crop flattened
-    assert model_outputs.shape == (16, 5)
+    assert model_inputs.shape == (2, 4, 4)  # [scalar, gradient] channels, 4x4 crop
+    assert model_outputs.shape == (5, 4, 4)  # [R, G, B, scalar_a, grad_a] channels
 
 
 @pytest.mark.parametrize("bad_dim", [0, 1, 2])

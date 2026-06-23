@@ -49,13 +49,15 @@ def test_gradient_opacity_net_forward_shape_and_range():
 
 
 def test_transfer_function_net_forward_2d():
+    # Flat sample points (N, 2) -> (N, 5), the path used by lut_from_network.
     net = TransferFunctionNet()
     out = net(torch.rand(16, 2))
     assert out.shape == (16, 5)
 
 
-def test_transfer_function_net_forward_3d():
-    # (N, H*W, 2) -> (N, H*W, 5) exercises the [..., 0:1]/[..., 1:2] split.
+def test_transfer_function_net_forward_image_batch():
+    # Channel-first image batch (N, 2, H, W) -> (N, 5, H, W), the training path
+    # whose output feeds the SSIM GaussianBlur.
     net = TransferFunctionNet()
-    out = net(torch.rand(2, 9, 2))
-    assert out.shape == (2, 9, 5)
+    out = net(torch.rand(2, 2, 7, 5))
+    assert out.shape == (2, 5, 7, 5)
