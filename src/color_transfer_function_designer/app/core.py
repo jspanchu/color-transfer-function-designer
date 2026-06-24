@@ -14,8 +14,8 @@ import vtkmodules.vtkInteractionStyle
 import vtkmodules.vtkRenderingOpenGL2  # noqa: F401
 from trame.app import TrameApp, asynchronous
 from trame.decorators import change, controller
-from trame.ui.vuetify3 import SinglePageWithDrawerLayout
-from trame.widgets import client, color_opacity_editor, vtklocal, vuetify3
+from trame.ui.vuetify3 import VAppLayout
+from trame.widgets import client, color_opacity_editor, html, vtklocal, vuetify3
 from vtkmodules.util.numpy_support import numpy_to_vtk
 from vtkmodules.vtkCommonCore import VTK_DOUBLE
 from vtkmodules.vtkCommonDataModel import (
@@ -168,7 +168,13 @@ class App(TrameApp):
         self.state.allow_transfer = False
 
         # Dialog visibility
+        self.state.show_settings_editor_dialog = False
         self.state.show_transfer_dialog = False
+
+        # Settings editor navigation (which category is shown in the right pane).
+        # Pure client-side UI state, so it never round-trips to the server.
+        self.state.settings_editor_section = "hyperparameters"
+        self.state.client_only("settings_editor_section")
 
         # Slice/crop plane state (per view). Position is a percentage [0, 100]
         # along the active axis so it stays valid when the direction changes.
@@ -1032,8 +1038,155 @@ class App(TrameApp):
         pass
 
     # ------------------------------------------------------------------
-    # Pages
+    # ui
     # ------------------------------------------------------------------
+
+    def _hyper_param_settings_editor(self):
+        with vuetify3.VCard():
+            vuetify3.VCardTitle("Hyperparameters")
+            vuetify3.VNumberInput(
+                v_model=("n_epochs",),
+                label="Epochs",
+                min=(1,),
+                max=(30,),
+                step=(1,),
+                control_variant="split",
+                classes="mx-2",
+            )
+            vuetify3.VNumberInput(
+                v_model=("n_slices",),
+                label="Slices",
+                min=(256,),
+                max=(4096,),
+                step=(256,),
+                control_variant="split",
+                classes="mx-2",
+            )
+            vuetify3.VNumberInput(
+                v_model=("batch_size",),
+                label="Batch Size",
+                control_variant="split",
+                classes="mx-2",
+            )
+            vuetify3.VNumberInput(
+                v_model=("learning_rate",),
+                min=(1.0e-5,),
+                max=(0.1,),
+                step=(1.0e-6,),
+                precision=(7,),
+                label="Learning rate",
+                control_variant="split",
+                classes="mx-2",
+            )
+            vuetify3.VNumberInput(
+                v_model=("slice_plane_margin",),
+                label="Margin",
+                min=(0.0),
+                max=(1.0,),
+                step=(0.05,),
+                precision=(3,),
+                control_variant="split",
+                classes="mx-2",
+            )
+
+    def _loss_function_settings_editor(self):
+        with vuetify3.VCard():
+            vuetify3.VCardTitle("Loss function")
+            vuetify3.VNumberInput(
+                v_model=("blend_factor_l1_vs_ssim",),
+                min=(0.0,),
+                max=(1.0,),
+                step=(0.05,),
+                precision=(2,),
+                label="L1/SSIM blend factor",
+                control_variant="split",
+                classes="mx-2",
+            )
+            with vuetify3.VCard():
+                vuetify3.VCardTitle("SSIM exponents")
+                vuetify3.VNumberInput(
+                    v_model=("ssim_alpha",),
+                    min=(0.0,),
+                    max=(1.0,),
+                    step=(0.05,),
+                    precision=(2,),
+                    label="Luminance",
+                    control_variant="split",
+                    classes="mx-2",
+                )
+                vuetify3.VNumberInput(
+                    v_model=("ssim_beta",),
+                    min=(0.0,),
+                    max=(1.0,),
+                    step=(0.05,),
+                    precision=(2,),
+                    label="Contrast",
+                    control_variant="split",
+                    classes="mx-2",
+                )
+                vuetify3.VNumberInput(
+                    v_model=("ssim_gamma",),
+                    min=(0.0,),
+                    max=(1.0,),
+                    step=(0.05,),
+                    precision=(2,),
+                    label="Structural",
+                    control_variant="split",
+                    classes="mx-2",
+                )
+            with vuetify3.VCard():
+                vuetify3.VCardTitle("GWMA settings (Gaussian Weighted Moving Average)")
+                vuetify3.VNumberInput(
+                    model_value=("ssim_gaussian_window_size[0]",),
+                    min=(1,),
+                    max=(20,),
+                    step=(1,),
+                    label="Window size[0]",
+                    control_variant="split",
+                    classes="mx-2",
+                )
+                vuetify3.VNumberInput(
+                    model_value=("ssim_gaussian_window_size[1]",),
+                    min=(1,),
+                    max=(20,),
+                    step=(1,),
+                    label="Window size[1]",
+                    control_variant="split",
+                    classes="mx-2",
+                )
+                vuetify3.VNumberInput(
+                    v_model=("ssim_gaussian_sigma[0]",),
+                    min=(0.0,),
+                    max=(3.0,),
+                    step=(0.05,),
+                    precisison=(3,),
+                    label="Sigma[0]",
+                    control_variant="split",
+                    classes="mx-2",
+                )
+                vuetify3.VNumberInput(
+                    v_model=("ssim_gaussian_sigma[1]",),
+                    min=(0.0,),
+                    max=(3.0,),
+                    step=(0.05,),
+                    precisison=(3,),
+                    label="Sigma[1]",
+                    control_variant="split",
+                    classes="mx-2",
+                )
+
+    def _target_lookup_table_settings_editor(self):
+        with vuetify3.VCard():
+            vuetify3.VCardTitle("Lookup table")
+            vuetify3.VNumberInput(
+                v_model=("n_lut_sampling_points",),
+                label="No. of sampling points",
+                min=(8),
+                max=(64,),
+                step=(2,),
+                control_variant="split",
+                classes="mx-2",
+            )
 
     def _ref_color_opacity_editor(self):
         return color_opacity_editor.ColorOpacityEditor(
@@ -1171,8 +1324,7 @@ class App(TrameApp):
             )
 
     def _generate_ui(self):
-        self.logger.debug("Show page 1")
-        with SinglePageWithDrawerLayout(self.server) as self.ui:
+        with VAppLayout(self.server) as self.ui:
             # Permission dialog 1 - model transfer
             with vuetify3.VDialog(
                 model_value=("show_transfer_dialog",),
@@ -1198,6 +1350,98 @@ class App(TrameApp):
                             click=self.on_confirm_transfer,
                         )
 
+            # Settings dialog 2 - centralized settings editor for transfer, losses, etc.
+            with vuetify3.VDialog(
+                model_value=("show_settings_editor_dialog",),
+                persistent=True,
+                max_width=900,
+                # Pin the height on the dialog (its overlay-content wrapper is the
+                # box that actually gets measured) so it stays fixed as categories
+                # with differing setting counts are selected. Height on the inner
+                # VCard alone leaves the wrapper free to resize to its content.
+                height="90vh",
+            ):
+                with vuetify3.VCard(
+                    # Fill the fixed-height dialog. overflow:hidden clamps the card
+                    # so an overflowing body scrolls internally instead of pushing
+                    # past the footer actions.
+                    classes="d-flex flex-column",
+                    style="height: 100%; overflow: hidden;",
+                ):
+                    vuetify3.VCardTitle("Settings Editor")
+                    vuetify3.VDivider()
+                    with vuetify3.VRow(
+                        no_gutters=True,
+                        classes="flex-grow-1 flex-nowrap",
+                        style="min-height: 0;",
+                    ):
+                        # Left column — category navigation (does not scroll)
+                        with vuetify3.VCol(
+                            cols="3",
+                            classes="border-e-sm",
+                        ):
+                            with vuetify3.VList(
+                                density="compact",
+                                nav=True,
+                            ):
+                                vuetify3.VListItem(
+                                    title="Hyperparameters",
+                                    active=(
+                                        "settings_editor_section === 'hyperparameters'",
+                                    ),
+                                    click=(
+                                        "settings_editor_section = 'hyperparameters'"
+                                    ),
+                                )
+                                vuetify3.VListItem(
+                                    title="Loss function",
+                                    active=(
+                                        "settings_editor_section === 'loss_function'",
+                                    ),
+                                    click="settings_editor_section = 'loss_function'",
+                                )
+                                vuetify3.VListItem(
+                                    title="Lookup table",
+                                    active=(
+                                        "settings_editor_section === 'lookup_table'",
+                                    ),
+                                    click="settings_editor_section = 'lookup_table'",
+                                )
+                        # Right column — the only scrollable region
+                        with vuetify3.VCol(
+                            cols="9",
+                            classes="overflow-y-auto pa-4",
+                            style="min-height: 0;",
+                        ):
+                            with html.Div(
+                                v_show=(
+                                    "settings_editor_section === 'hyperparameters'",
+                                ),
+                            ):
+                                self._hyper_param_settings_editor()
+                            with html.Div(
+                                v_show=("settings_editor_section === 'loss_function'",),
+                            ):
+                                self._loss_function_settings_editor()
+                            with html.Div(
+                                v_show=("settings_editor_section === 'lookup_table'",),
+                            ):
+                                self._target_lookup_table_settings_editor()
+                    vuetify3.VDivider()
+                    with vuetify3.VCardActions():
+                        vuetify3.VSpacer()
+                        vuetify3.VBtn(
+                            "Reset",
+                            variant="text",
+                            click=self._set_default_parameters,
+                        )
+                        vuetify3.VBtn(
+                            "Close",
+                            color="primary",
+                            variant="tonal",
+                            click="show_settings_editor_dialog = false",
+                        )
+
             # File dialog
             FileDialog(is_open=False, file_browser=self.file_browser)
 
@@ -1217,86 +1461,16 @@ class App(TrameApp):
                 exec="utils.colorTransferFunctionDesignerCrop.teardown($event)",
             ).exec
 
-            with self.ui.drawer:
-                with vuetify3.VCard():
-                    vuetify3.VCardTitle("Training")
-                    vuetify3.VNumberInput(
-                        v_model=("n_epochs",),
-                        label="Epochs",
-                        min=(1,),
-                        max=(30,),
-                        step=(1,),
-                        control_variant="split",
-                        classes="mx-2",
-                    )
-                    vuetify3.VNumberInput(
-                        v_model=("n_slices",),
-                        label="Slices",
-                        min=(256,),
-                        max=(4096,),
-                        step=(256,),
-                        control_variant="split",
-                        classes="mx-2",
-                    )
-                    vuetify3.VNumberInput(
-                        v_model=("batch_size",),
-                        label="Batch Size",
-                        control_variant="split",
-                        classes="mx-2",
-                    )
-                    vuetify3.VNumberInput(
-                        v_model=("learning_rate",),
-                        min=(1.0e-5,),
-                        max=(0.1,),
-                        step=(1.0e-6,),
-                        precision=(7,),
-                        label="Learning rate",
-                        control_variant="split",
-                        classes="mx-2",
-                    )
-                    vuetify3.VNumberInput(
-                        v_model=("blend_factor_l1_vs_ssim",),
-                        min=(0.0,),
-                        max=(1.0,),
-                        step=(0.05,),
-                        precision=(2,),
-                        label="L1/SSIM blend",
-                        control_variant="split",
-                        classes="mx-2",
-                    )
-                with vuetify3.VCard():
-                    vuetify3.VCardTitle("2D Slice plane")
-                    vuetify3.VNumberInput(
-                        v_model=("slice_plane_margin",),
-                        label="Margin",
-                        min=(0.0),
-                        max=(1.0,),
-                        step=(0.05,),
-                        precision=(3,),
-                        control_variant="split",
-                        classes="mx-2",
-                    )
-                with vuetify3.VCard():
-                    vuetify3.VCardTitle("Lookup table")
-                    vuetify3.VNumberInput(
-                        v_model=("n_lut_sampling_points",),
-                        label="No. of sampling points",
-                        min=(8),
-                        max=(64,),
-                        step=(2,),
-                        control_variant="split",
-                        classes="mx-2",
-                    )
-                vuetify3.VSpacer()
+            with vuetify3.VAppBar():
+                vuetify3.VToolbarTitle(self.state.trame__title)
                 with vuetify3.VCardActions():
                     vuetify3.VBtn(
-                        "Reset",
-                        color="primary",
-                        variant="tonal",
-                        click=self._set_default_parameters,
+                        icon="mdi-cog",
+                        variant="text",
+                        click="show_settings_editor_dialog = true",
                     )
 
-            with self.ui.content:
+            with vuetify3.VMain():
                 with vuetify3.VContainer(
                     fluid=True,
                     classes="fill-height d-flex flex-column pa-4",
@@ -1491,7 +1665,7 @@ class App(TrameApp):
                                     "Transfer",
                                     color="primary",
                                     variant="tonal",
-                                    click=self.on_open_transfer_dialog,
+                                    click="show_transfer_dialog = true",
                                     disabled=("!allow_transfer",),
                                 )
                             vuetify3.VProgressLinear(
