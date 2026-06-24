@@ -574,10 +574,6 @@ class App(TrameApp):
     # Permission dialog controllers
     # ------------------------------------------------------------------
 
-    @controller.set("on_open_init_dialog")
-    def on_open_init_dialog(self):
-        self.state.show_init_dialog = True
-
     @controller.set("on_open_transfer_dialog")
     def on_open_transfer_dialog(self):
         self.state.show_transfer_dialog = True
