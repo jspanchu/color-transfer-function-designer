@@ -56,7 +56,7 @@ def apply_lut_torch(
     lut_rgb: torch.Tensor,  # (K, 4) on device — col 0 xp, cols 1-3 fp
     lut_scalar_alpha: torch.Tensor,  # (M, 2) on device — col 0 xp, col 1 fp
     lut_gradient_alpha: torch.Tensor,  # (L, 2) on device — col 0 xp, col 1 fp
-) -> torch.Tensor:  # (N, 5): R G B scalar_alpha grad_alpha
+) -> torch.Tensor:  # (5, N): R G B scalar_alpha grad_alpha
     xp_rgb = lut_rgb[:, 0]
     r = _interp1d(scalar_flat, xp_rgb, lut_rgb[:, 1])
     g = _interp1d(scalar_flat, xp_rgb, lut_rgb[:, 2])
@@ -65,7 +65,7 @@ def apply_lut_torch(
     grad_alpha = _interp1d(
         gradient_flat, lut_gradient_alpha[:, 0], lut_gradient_alpha[:, 1]
     )
-    return torch.stack([r, g, b, alpha, grad_alpha], dim=1)
+    return torch.stack([r, g, b, alpha, grad_alpha])
 
 
 class SharedSlicePlaneDataset(torch.utils.data.Dataset):
@@ -165,6 +165,8 @@ class SharedSlicePlaneDataset(torch.utils.data.Dataset):
         unknown_g = extract_2d_slice(
             self._gradient_mags_unknown_lut, axis, slice_plane_idx
         )
+        assert known_s.shape == unknown_s.shape
+        assert known_g.shape == unknown_g.shape
 
         # Random square crop — same origin applied to all four slices so they stay aligned
         H, W = known_s.shape
@@ -176,15 +178,12 @@ class SharedSlicePlaneDataset(torch.utils.data.Dataset):
         unknown_s = unknown_s[top : top + cs, left : left + cs]
         unknown_g = unknown_g[top : top + cs, left : left + cs]
 
-        model_inputs = torch.cat(
-            (unknown_s.ravel()[:, None], unknown_g.ravel()[:, None]),
-            dim=1,
-        )
+        model_inputs = torch.stack((unknown_s, unknown_g))  # [2, H, W]
         model_outputs = apply_lut_torch(
             known_s.ravel(),
             known_g.ravel(),
             self._lut_rgb,
             self._lut_scalar_alpha,
             self._lut_gradient_alpha,
-        )
+        ).reshape(5, *known_s.shape)  # [5, H, W]
         return model_inputs, model_outputs

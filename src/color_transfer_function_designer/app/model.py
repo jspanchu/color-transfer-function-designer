@@ -115,9 +115,12 @@ class TransferFunctionNet(torch.nn.Module):
         self.gradient_opacity_net = GradientOpacityNet()
 
     def forward(self, scalars_and_gradients: torch.Tensor) -> torch.Tensor:
-        # scalars_and_gradients: [N, H*W, 2]
-        rgba = self.color_opacity_net(scalars_and_gradients[..., 0:1])  # [N, H*W, 4]
-        grad_a = self.gradient_opacity_net(
-            scalars_and_gradients[..., 1:2]
-        )  # [N, H*W, 1]
-        return torch.cat([rgba, grad_a], dim=-1)  # [N, H*W, 5]
+        # scalars_and_gradients: [N, 2, H, W] (channel-first image batch) or [N, 2]
+        # (flat sample points). The branch nets are pointwise MLPs that act on the
+        # last (feature) dim, so move channels there and back. For the 2-D sample
+        # case both moves are no-ops.
+        x = scalars_and_gradients.movedim(1, -1)  # [N, H, W, 2] / [N, 2]
+        rgba = self.color_opacity_net(x[..., 0:1])  # [N, H, W, 4] / [N, 4]
+        grad_a = self.gradient_opacity_net(x[..., 1:2])  # [N, H, W, 1] / [N, 1]
+        out = torch.cat([rgba, grad_a], dim=-1)  # [N, H, W, 5] / [N, 5]
+        return out.movedim(-1, 1)  # [N, 5, H, W] / [N, 5]
