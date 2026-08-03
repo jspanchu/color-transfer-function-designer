@@ -47,7 +47,7 @@
       const renderer = view.getVtkObject(rendererId);
       const camera = await renderer.getActiveCamera();
       entry.rendererId = rendererId;
-      entry.cameraObserver = camera.observe("ModifiedEvent", () =>
+      entry.cameraObserver = camera.$observe("ModifiedEvent", () =>
         copyCamera(refName, dstRefName),
       );
       viewObservers.set(refName, entry);

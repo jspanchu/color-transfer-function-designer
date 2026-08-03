@@ -40,10 +40,6 @@ We recommend using uv for setting up and managing a virtual environment for your
     pre-commit install
     pre-commit install --hook-type commit-msg
 
-    # Allow live code edit
-    uv pip install -e .
-
-
 
 For running tests and checks, you can run ``nox``.
 

@@ -12,9 +12,9 @@ dependencies = [
     "torchvision==0.26.0",
     "trame>=3.12",
     "trame-vuetify",
-    "trame-vtklocal",
+    "trame-vtklocal==1.4.0",
     "trame-color-opacity-editor",
-    "vtk==9.6.20260517.dev0",
+    "vtk==9.7.20260726.dev0",
 ]
 requires-python = ">=3.10"
 readme = "README.rst"
