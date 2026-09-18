@@ -1,6 +1,6 @@
 import torch
 
-from color_transfer_function_designer.app.losses.ssim import SSIMLoss
+from color_transfer_function_designer.lib.losses.ssim import SSIMLoss
 
 
 def test_ssim_loss_identical_inputs_is_zero():

@@ -4,13 +4,13 @@ import numpy as np
 import torch
 from vtkmodules.vtkCommonDataModel import vtkImageData
 
-from color_transfer_function_designer.app.dataset import (
+from color_transfer_function_designer.lib.dataset import (
     SharedSlicePlaneDataset,
     compute_gradient_magnitude,
     load_vtk_image_to_tensor,
 )
-from color_transfer_function_designer.app.losses.ssim import SSIMLoss
-from color_transfer_function_designer.app.model import (
+from color_transfer_function_designer.lib.losses.ssim import SSIMLoss
+from color_transfer_function_designer.lib.model import (
     TransferFunctionNet,
 )
 
@@ -99,7 +99,7 @@ def transfer_reference_lut(
     crop_size: int | None = None,
 ):
     """
-    Returns a :class:`color_transfer_function_designer.app.model.TransferFunctionNet` whose weights and biases
+    Returns a :class:`color_transfer_function_designer.lib.model.TransferFunctionNet` whose weights and biases
     are learned to map `tgt_volume` scalars to color/opacity similar to the manner in which `lut_rgb`, `lut_scalar_alpha`,
     and `lut_gradient_alpha` map `ref_volume` scalars.
 

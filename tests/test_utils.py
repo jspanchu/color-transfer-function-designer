@@ -3,7 +3,7 @@ import pathlib
 import numpy as np
 import pytest
 
-from color_transfer_function_designer.app.utils import (
+from color_transfer_function_designer.lib.utils import (
     read_paraview_tf_from_json,
     read_slicer_tf_from_ascii,
     write_slicer_vp,

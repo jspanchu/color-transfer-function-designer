@@ -3,8 +3,8 @@ import logging
 
 from trame.app import get_server
 
-from color_transfer_function_designer.app.core import App
-from color_transfer_function_designer.app.logger import install_handlers
+from color_transfer_function_designer.apps.medical.core import App
+from color_transfer_function_designer.ui.logger import install_handlers
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)

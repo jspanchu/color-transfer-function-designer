@@ -1,6 +1,6 @@
 import torch
 
-from color_transfer_function_designer.app.model import (
+from color_transfer_function_designer.lib.model import (
     ColorOpacityNet,
     Embedder,
     GradientOpacityNet,

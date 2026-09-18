@@ -45,7 +45,10 @@ dev = [
 ]
 
 [project.scripts]
-color-transfer-function-designer = "color_transfer_function_designer.app:main"
+# One console script per mini application under apps/.
+ctfd-medical = "color_transfer_function_designer.apps.medical:main"
+# Kept for the docker bundle and existing docs; same app as ctfd-medical.
+color-transfer-function-designer = "color_transfer_function_designer.apps.medical:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -69,19 +72,19 @@ testpaths = ["tests"]
 
 [tool.coverage.run]
 branch = true
-source = ["src/color_transfer_function_designer/app"]
+source = ["color_transfer_function_designer.lib"]
 
 [tool.coverage.report]
 show_missing = true
 fail_under = 100
-# Only the pure (UI-free) logic modules are gated at 100%; core.py / file.py
+# Only the pure (UI-free) logic modules in lib/ are gated at 100%; apps/ and ui/
 # are tightly coupled to trame/VTK-wasm and are out of scope.
 include = [
-    "*/app/model.py",
-    "*/app/dataset.py",
-    "*/app/losses/ssim.py",
-    "*/app/transfer.py",
-    "*/app/utils.py",
+    "*/lib/model.py",
+    "*/lib/dataset.py",
+    "*/lib/losses/ssim.py",
+    "*/lib/transfer.py",
+    "*/lib/utils.py",
 ]
 
 [tool.ruff]

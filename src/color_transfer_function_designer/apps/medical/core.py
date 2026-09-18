@@ -37,33 +37,35 @@ from vtkmodules.vtkRenderingCore import (
 )
 from vtkmodules.vtkRenderingVolumeOpenGL2 import vtkSmartVolumeMapper
 
-from color_transfer_function_designer.app import module
-from color_transfer_function_designer.app.dataset import (
+from color_transfer_function_designer.lib.dataset import (
     compute_gradient_magnitude,
     load_vtk_image_to_tensor,
 )
-from color_transfer_function_designer.app.file import (
-    FileBrowser,
-    FileDialog,
-)
-from color_transfer_function_designer.app.logger import install_handlers
-from color_transfer_function_designer.app.model import TransferFunctionNet
-from color_transfer_function_designer.app.transfer import (
+from color_transfer_function_designer.lib.model import TransferFunctionNet
+from color_transfer_function_designer.lib.transfer import (
     convert_lut_to_state_format,
     lut_from_network,
     transfer_reference_lut,
 )
-from color_transfer_function_designer.app.utils import (
+from color_transfer_function_designer.lib.utils import (
     read_paraview_tf_from_json,
     read_slicer_tf_from_ascii,
     write_slicer_vp,
 )
+from color_transfer_function_designer.ui import module
+from color_transfer_function_designer.ui.file import (
+    FileBrowser,
+    FileDialog,
+)
+from color_transfer_function_designer.ui.logger import install_handlers
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 class App(TrameApp):
-    logger = logging.getLogger("color_transfer_function_designer.app.core.TrainingApp")
+    logger = logging.getLogger(
+        "color_transfer_function_designer.apps.medical.core.TrainingApp"
+    )
     install_handlers(logger)
 
     _SLICE_DIRECTIONS = (
@@ -917,7 +919,7 @@ class App(TrameApp):
         it (re)apply the clipping plane there. All ongoing crop changes are
         handled in the browser via state watchers. When ``relink`` is set and the
         views are linked, the client re-adopts the reference crop first.
-        See color_transfer_function_designer.app.module.serve.crop.js.
+        See color_transfer_function_designer.ui.module.serve.crop.js.
         """
         if key == "ref":
             html_view, mapper = self._ref_html_view, self._ref_volume.mapper

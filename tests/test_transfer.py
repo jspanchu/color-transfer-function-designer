@@ -1,8 +1,8 @@
 import numpy as np
 import pytest
 
-from color_transfer_function_designer.app.model import TransferFunctionNet
-from color_transfer_function_designer.app.transfer import (
+from color_transfer_function_designer.lib.model import TransferFunctionNet
+from color_transfer_function_designer.lib.transfer import (
     convert_lut_to_state_format,
     device,
     lut_from_network,

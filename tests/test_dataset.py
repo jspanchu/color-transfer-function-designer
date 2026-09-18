@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 import torch
 
-from color_transfer_function_designer.app.dataset import (
+from color_transfer_function_designer.lib.dataset import (
     SharedSlicePlaneDataset,
     _interp1d,
     apply_lut_torch,

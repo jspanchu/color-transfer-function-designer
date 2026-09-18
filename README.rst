@@ -17,11 +17,11 @@ Install the application/library
 
     pip install color-transfer-function-designer
 
-Run the application
+Run the medical (label map to intensity) application
 
 .. code-block:: console
 
-    color-transfer-function-designer
+    ctfd-medical
 
 Development setup
 ----------------------------------------
