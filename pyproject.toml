@@ -10,11 +10,11 @@ dependencies = [
     "pytest-cov >=3",
     "torch==2.11.0",
     "torchvision==0.26.0",
-    "trame>=3.12",
+    "trame>=4",
     "trame-vuetify",
-    "trame-vtklocal==1.4.0",
+    "trame-vtklocal==1.6.4",
     "trame-color-opacity-editor",
-    "vtk==9.7.20260726.dev0",
+    "vtk==9.7.20260913.dev0",
 ]
 requires-python = ">=3.10"
 readme = "README.rst"

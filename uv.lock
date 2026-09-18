@@ -587,11 +587,11 @@ requires-dist = [
     { name = "ruff", marker = "extra == 'dev'" },
     { name = "torch", specifier = "==2.11.0" },
     { name = "torchvision", specifier = "==0.26.0" },
-    { name = "trame", specifier = ">=3.12" },
+    { name = "trame", specifier = ">=4" },
     { name = "trame-color-opacity-editor" },
-    { name = "trame-vtklocal", specifier = "==1.4.0" },
+    { name = "trame-vtklocal", specifier = "==1.6.2" },
     { name = "trame-vuetify" },
-    { name = "vtk", specifier = "==9.7.20260726.dev0" },
+    { name = "vtk", specifier = "==9.7.20260913.dev0" },
 ]
 provides-extras = ["app", "jupyter", "dev"]
 
@@ -633,7 +633,7 @@ resolution-markers = [
     "python_full_version < '3.11'",
 ]
 dependencies = [
-    { name = "numpy", version = "2.2.6", source = { registry = "https://wheels.vtk.org/" }, marker = "python_full_version < '3.11'" },
+    { name = "numpy", version = "2.2.6", source = { registry = "https://wheels.vtk.org/" } },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/66/54/eb9bfc647b19f2009dd5c7f5ec51c4e6ca831725f1aea7a993034f483147/contourpy-1.3.2.tar.gz", hash = "sha256:b6945942715a034c671b7fc54f9588126b0b8bf23db2696e3ca8328f3ff0ab54", size = 13466130, upload-time = "2025-04-15T17:47:53.79Z" }
 wheels = [
@@ -705,7 +705,7 @@ resolution-markers = [
     "python_full_version == '3.11.*'",
 ]
 dependencies = [
-    { name = "numpy", version = "2.4.6", source = { registry = "https://wheels.vtk.org/" }, marker = "python_full_version >= '3.11'" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://wheels.vtk.org/" } },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/58/01/1253e6698a07380cd31a736d248a3f2a50a7c88779a1813da27503cadc2a/contourpy-1.3.3.tar.gz", hash = "sha256:083e12155b210502d0bca491432bb04d56dc3432f95a979b429f2848c3dbe880", size = 13466174, upload-time = "2025-07-26T12:03:12.549Z" }
 wheels = [
@@ -940,37 +940,37 @@ wheels = [
 
 [package.optional-dependencies]
 cublas = [
-    { name = "nvidia-cublas", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "nvidia-cublas" },
 ]
 cudart = [
-    { name = "nvidia-cuda-runtime", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "nvidia-cuda-runtime" },
 ]
 cufft = [
-    { name = "nvidia-cufft", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "nvidia-cufft" },
 ]
 cufile = [
-    { name = "nvidia-cufile", marker = "sys_platform == 'linux'" },
+    { name = "nvidia-cufile" },
 ]
 cupti = [
-    { name = "nvidia-cuda-cupti", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "nvidia-cuda-cupti" },
 ]
 curand = [
-    { name = "nvidia-curand", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "nvidia-curand" },
 ]
 cusolver = [
-    { name = "nvidia-cusolver", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "nvidia-cusolver" },
 ]
 cusparse = [
-    { name = "nvidia-cusparse", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "nvidia-cusparse" },
 ]
 nvjitlink = [
-    { name = "nvidia-nvjitlink", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "nvidia-nvjitlink" },
 ]
 nvrtc = [
-    { name = "nvidia-cuda-nvrtc", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "nvidia-cuda-nvrtc" },
 ]
 nvtx = [
-    { name = "nvidia-nvtx", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "nvidia-nvtx" },
 ]
 
 [[package]]
@@ -1056,7 +1056,7 @@ name = "exceptiongroup"
 version = "1.3.1"
 source = { registry = "https://wheels.vtk.org/" }
 dependencies = [
-    { name = "typing-extensions", marker = "python_full_version < '3.11'" },
+    { name = "typing-extensions" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/50/79/66800aadf48771f6b62f7eb014e352e5d06856655206165d775e675a02c9/exceptiongroup-1.3.1.tar.gz", hash = "sha256:8b412432c6055b0b7d14c310000ae93352ed6754f70fa8f7c34141f91c4e3219", size = 30371, upload-time = "2025-11-21T23:01:54.787Z" }
 wheels = [
@@ -1392,17 +1392,17 @@ resolution-markers = [
     "python_full_version < '3.11'",
 ]
 dependencies = [
-    { name = "colorama", marker = "python_full_version < '3.11' and sys_platform == 'win32'" },
-    { name = "decorator", marker = "python_full_version < '3.11'" },
-    { name = "exceptiongroup", marker = "python_full_version < '3.11'" },
-    { name = "jedi", marker = "python_full_version < '3.11'" },
-    { name = "matplotlib-inline", marker = "python_full_version < '3.11'" },
-    { name = "pexpect", marker = "python_full_version < '3.11' and sys_platform != 'emscripten' and sys_platform != 'win32'" },
-    { name = "prompt-toolkit", marker = "python_full_version < '3.11'" },
-    { name = "pygments", marker = "python_full_version < '3.11'" },
-    { name = "stack-data", marker = "python_full_version < '3.11'" },
-    { name = "traitlets", marker = "python_full_version < '3.11'" },
-    { name = "typing-extensions", marker = "python_full_version < '3.11'" },
+    { name = "colorama", marker = "sys_platform == 'win32'" },
+    { name = "decorator" },
+    { name = "exceptiongroup" },
+    { name = "jedi" },
+    { name = "matplotlib-inline" },
+    { name = "pexpect", marker = "sys_platform != 'emscripten' and sys_platform != 'win32'" },
+    { name = "prompt-toolkit" },
+    { name = "pygments" },
+    { name = "stack-data" },
+    { name = "traitlets" },
+    { name = "typing-extensions" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/40/18/f8598d287006885e7136451fdea0755af4ebcbfe342836f24deefaed1164/ipython-8.39.0.tar.gz", hash = "sha256:4110ae96012c379b8b6db898a07e186c40a2a1ef5d57a7fa83166047d9da7624", size = 5513971, upload-time = "2026-03-27T10:02:13.94Z" }
 wheels = [
@@ -1419,18 +1419,18 @@ resolution-markers = [
     "python_full_version == '3.11.*'",
 ]
 dependencies = [
-    { name = "colorama", marker = "python_full_version >= '3.11' and sys_platform == 'win32'" },
-    { name = "decorator", marker = "python_full_version >= '3.11'" },
-    { name = "ipython-pygments-lexers", marker = "python_full_version >= '3.11'" },
-    { name = "jedi", marker = "python_full_version >= '3.11'" },
-    { name = "matplotlib-inline", marker = "python_full_version >= '3.11'" },
-    { name = "pexpect", marker = "python_full_version >= '3.11' and sys_platform != 'emscripten' and sys_platform != 'win32'" },
-    { name = "prompt-toolkit", marker = "python_full_version >= '3.11'" },
-    { name = "psutil", marker = "python_full_version >= '3.11'" },
-    { name = "pygments", marker = "python_full_version >= '3.11'" },
-    { name = "stack-data", marker = "python_full_version >= '3.11'" },
-    { name = "traitlets", marker = "python_full_version >= '3.11'" },
-    { name = "typing-extensions", marker = "python_full_version == '3.11.*'" },
+    { name = "colorama", marker = "sys_platform == 'win32'" },
+    { name = "decorator" },
+    { name = "ipython-pygments-lexers" },
+    { name = "jedi" },
+    { name = "matplotlib-inline" },
+    { name = "pexpect", marker = "sys_platform != 'emscripten' and sys_platform != 'win32'" },
+    { name = "prompt-toolkit" },
+    { name = "psutil" },
+    { name = "pygments" },
+    { name = "stack-data" },
+    { name = "traitlets" },
+    { name = "typing-extensions", marker = "python_full_version < '3.12'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/cd/c4/87cda5842cf5c31837c06ddb588e11c3c35d8ece89b7a0108c06b8c9b00a/ipython-9.13.0.tar.gz", hash = "sha256:7e834b6afc99f020e3f05966ced34792f40267d64cb1ea9043886dab0dde5967", size = 4430549, upload-time = "2026-04-24T12:24:55.221Z" }
 wheels = [
@@ -1442,7 +1442,7 @@ name = "ipython-pygments-lexers"
 version = "1.1.1"
 source = { registry = "https://wheels.vtk.org/" }
 dependencies = [
-    { name = "pygments", marker = "python_full_version >= '3.11'" },
+    { name = "pygments" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/ef/4c/5dd1d8af08107f88c7f741ead7a40854b8ac24ddf9ae850afbcf698aa552/ipython_pygments_lexers-1.1.1.tar.gz", hash = "sha256:09c0138009e56b6854f9535736f4171d855c8c08a563a0dcd8022f78355c7e81", size = 8393, upload-time = "2025-01-17T11:24:34.505Z" }
 wheels = [
@@ -3915,7 +3915,7 @@ wheels = [
 
 [[package]]
 name = "trame"
-version = "3.13.2"
+version = "4.0.0"
 source = { registry = "https://wheels.vtk.org/" }
 dependencies = [
     { name = "pyyaml" },
@@ -3924,21 +3924,21 @@ dependencies = [
     { name = "trame-server" },
     { name = "wslink" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/fc/c7/790a5f28d75ea166fd9ec0bc6545e42683dc59ddd0b15ed374d00fb8e187/trame-3.13.2.tar.gz", hash = "sha256:9868d1c2bce981ae2c66eb6a16d39e2a14f042eedb1047666266c753ecaf3f64", size = 26386, upload-time = "2026-05-15T03:50:50.626Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/08/1e/d76411adb59829773619a788cce2f4a09645c44bed09f180079369096033/trame-4.0.0.tar.gz", hash = "sha256:148cdd10b4636539e375a898c16df139d7a03f3cf8a186cbd5a23c42d763a6b3", size = 19091, upload-time = "2026-09-09T16:53:40.646Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/eb/4a/1474a166fa9494162779b4145b4b82adbe482cfb776efffeff59de4ba70f/trame-3.13.2-py3-none-any.whl", hash = "sha256:23e87a65a6ea9241ce1060e9cd01426e48b3b8b72cd9f3cb974fc398649280b6", size = 31514, upload-time = "2026-05-15T03:50:49.129Z" },
+    { url = "https://files.pythonhosted.org/packages/4c/a8/137edd4bd17081244dbafd3ebcb35612d791b605eaf9a0c57e47200abd24/trame-4.0.0-py3-none-any.whl", hash = "sha256:e3c8a89f7a209fea7a595bd877301c851cd0db18cc7620f11b08d4d7966e5dcc", size = 27303, upload-time = "2026-09-09T16:53:39.12Z" },
 ]
 
 [[package]]
 name = "trame-client"
-version = "3.12.3"
+version = "4.1.0"
 source = { registry = "https://wheels.vtk.org/" }
 dependencies = [
     { name = "trame-common" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/42/cf/b9aff060920f98a1f5fe784f5209a5c747295868f62e45a8a92b32692a48/trame_client-3.12.3.tar.gz", hash = "sha256:abf066d57dacb47b4958e05177b78b6b1c78f0a6ca1529884916e932742a712a", size = 246844, upload-time = "2026-05-26T21:21:17.776Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/31/38/8ebc00a78a29b1bea9285866bb16f0af61c7922517f70398cdb5453ada1f/trame_client-4.1.0.tar.gz", hash = "sha256:63fbf128090ab334d432d0661a09a6b738027b26ac9be03f4497559fb839c70c", size = 552102, upload-time = "2026-09-14T06:56:49.199Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/60/9c/5d9d7d8a53008db940101b533a30ffcd5bc3db562758c0683784207aa633/trame_client-3.12.3-py3-none-any.whl", hash = "sha256:4b3cd4e3955aa6f05d94103e9af48b26d73214dce6da217595e3f1c61b8a5111", size = 251302, upload-time = "2026-05-26T21:21:16.012Z" },
+    { url = "https://files.pythonhosted.org/packages/e5/32/d40b06ab592b73c68c1551108917c298f050676fb56735d83f155995318c/trame_client-4.1.0-py3-none-any.whl", hash = "sha256:b4cb4411d4cade529591650d9d2439c7aa7e64235159b3ff57a7943202841113", size = 567283, upload-time = "2026-09-14T06:56:47.519Z" },
 ]
 
 [[package]]
@@ -3955,51 +3955,51 @@ wheels = [
 
 [[package]]
 name = "trame-common"
-version = "1.2.3"
+version = "1.2.7"
 source = { registry = "https://wheels.vtk.org/" }
-sdist = { url = "https://files.pythonhosted.org/packages/b6/8c/f9e7bcf73d888df9df6115deb8619679444d83b9e92a26604a05f0433307/trame_common-1.2.3.tar.gz", hash = "sha256:125b60d77545d7352fb8eabc0f6e0e12070aa6ada31e992862f16a49f34b73ad", size = 19998, upload-time = "2026-05-08T17:12:33.942Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/75/70/2ed0995946cf18213bc7b944cc41800e0384192f18bdefae1b4cbe48a1b5/trame_common-1.2.7.tar.gz", hash = "sha256:bf31b565f78fb4628e5d2f4cca99041e34f0e31ebe44781c7d015589826e4e0d", size = 20352, upload-time = "2026-08-07T00:08:52.346Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/d5/80/957a3dae26c1b38a302a96bf49adc53399e5f04c0afdf750d4978216fe14/trame_common-1.2.3-py3-none-any.whl", hash = "sha256:85d13ac87e7e4db853278afc98d19d14972e1fc75394aac9800221be0829e5cd", size = 23482, upload-time = "2026-05-08T17:12:32.548Z" },
+    { url = "https://files.pythonhosted.org/packages/f2/ce/ffe6e768887536aff8dcddf5da3080a51243fe933c95dd8958c8bfda6a27/trame_common-1.2.7-py3-none-any.whl", hash = "sha256:14d50c651505c41f9144261b67bc0c7b3524bf72893d56ad544e255cfa1c1ba1", size = 23924, upload-time = "2026-08-07T00:08:51.026Z" },
 ]
 
 [[package]]
 name = "trame-server"
-version = "3.12.4"
+version = "4.0.0"
 source = { registry = "https://wheels.vtk.org/" }
 dependencies = [
     { name = "more-itertools" },
     { name = "trame-common" },
     { name = "wslink" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/30/dd/5d030d4a8b8e66cad206229cb0eee12cddd4049dfc2284b322e58eaccf60/trame_server-3.12.4.tar.gz", hash = "sha256:95a0d2732fd52eb2912ca05874eba86d91e8d7ea7e4a0a8881ef3f539293645f", size = 37902, upload-time = "2026-05-19T14:26:24.914Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/8c/2f/252efbbcd58053219b10d5fcfad797798191cc5a8251a82acc8d94e189f3/trame_server-4.0.0.tar.gz", hash = "sha256:0bcf91816a1f43d497b7ad8bce774d5e9cceab13ee844369df17f66da1245e83", size = 39174, upload-time = "2026-09-09T15:59:52.777Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/5d/cf/e5b1e37d7bcc32288075ec8205cac5d03b15c457eab9d7b076614770c6f0/trame_server-3.12.4-py3-none-any.whl", hash = "sha256:987190c63a3b255bd54651fb53a5814d74e2703e3e786d1c3ebdb97a1fe2de9b", size = 44413, upload-time = "2026-05-19T14:26:23.233Z" },
+    { url = "https://files.pythonhosted.org/packages/d9/de/066195b00ebd5e0914987464359428826286527c4feff9b090f13d0c4436/trame_server-4.0.0-py3-none-any.whl", hash = "sha256:04984722a4b989da8c77c368212c82ebfcdd7ec9d7954564a36c94bd05b47614", size = 45632, upload-time = "2026-09-09T15:59:51.335Z" },
 ]
 
 [[package]]
 name = "trame-vtklocal"
-version = "1.4.0"
+version = "1.6.2"
 source = { registry = "https://wheels.vtk.org/" }
 dependencies = [
     { name = "packaging" },
     { name = "trame" },
     { name = "trame-common" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/e6/08/dc3b9d98ca4682195f837450649559d17e491584af8ba464b6b2ef41bbf4/trame_vtklocal-1.4.0.tar.gz", hash = "sha256:244e77aece38c67c8de324e5df9639b9f8335c6988c33beb77d27f29646c5c34", size = 29556, upload-time = "2026-08-27T17:02:46.023Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/83/89/0d2126bb1180c58dd8bcdacff73ed246111aa0b3ebc430b7d2772c76b314/trame_vtklocal-1.6.2.tar.gz", hash = "sha256:72371cea11a5c9b0bbb18398bdc3926d05277632d1f45c78edea1d4285307e39", size = 43723, upload-time = "2026-09-17T16:50:33.47Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/05/6f/b920ffaf6ba1d9f3d00cc8986bc8ae1eaf26240f834ba7b66d7edaac921d/trame_vtklocal-1.4.0-py3-none-any.whl", hash = "sha256:e90f5facad6841b61710d78bffe28b15f816d7ed143c68f9c67cceb26a8a82cf", size = 32929, upload-time = "2026-08-27T17:02:44.53Z" },
+    { url = "https://files.pythonhosted.org/packages/d6/11/0710ae039ceec5f7a8712ff93e4456efa4f2c65b0830151bf1935c7fc85a/trame_vtklocal-1.6.2-py3-none-any.whl", hash = "sha256:43c6f004db542010d8b77f0d62386da8bfa8d2c7aa2d892201bd3a2987c3a079", size = 47980, upload-time = "2026-09-17T16:50:32.206Z" },
 ]
 
 [[package]]
 name = "trame-vuetify"
-version = "3.2.2"
+version = "3.2.6"
 source = { registry = "https://wheels.vtk.org/" }
 dependencies = [
     { name = "trame-client" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/d7/1a/1701aaf3450def4b17cb3580d0a340361065b1d258e156861eb83a8377f2/trame_vuetify-3.2.2.tar.gz", hash = "sha256:0e111ec5fdfed31e5c189eafb306f4f25aacd75527b3a5612bb5a4cacbb18d8b", size = 5107360, upload-time = "2026-04-28T13:22:53.684Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/a9/cb/178864dd57b081790434ed1c922489d89c9f4e2c1b55381342dd2a55663a/trame_vuetify-3.2.6.tar.gz", hash = "sha256:186be158d2f4fc40eb2abe7c42bac3df9e34fb0db29320d281c256e85f604d2b", size = 5130163, upload-time = "2026-09-10T14:33:54.088Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/ac/3a/0dbff3ce4fd9cc6076fce8ef714c33796bd25d08b3d249ca78ea458a85fd/trame_vuetify-3.2.2-py3-none-any.whl", hash = "sha256:b40ecfa30a675df4ce40d5161b9b6c040cfe5445599933c478a3359afbee91d3", size = 5134630, upload-time = "2026-04-28T13:22:51.132Z" },
+    { url = "https://files.pythonhosted.org/packages/5a/b8/6d6524b25091472e2ded6eb9542fc2156744fa28fe1d7cdab69f732f92bf/trame_vuetify-3.2.6-py3-none-any.whl", hash = "sha256:dab371192bcc30208005aa7d85b6689cc916375061e8339bf107bcf00122fd89", size = 5160277, upload-time = "2026-09-10T14:33:52.123Z" },
 ]
 
 [[package]]
@@ -4077,30 +4077,33 @@ wheels = [
 
 [[package]]
 name = "vtk"
-version = "9.7.20260823.dev0"
+version = "9.7.20260913.dev0"
 source = { registry = "https://wheels.vtk.org/" }
 dependencies = [
     { name = "matplotlib" },
 ]
 wheels = [
-    { url = "https://gitlab.kitware.com/api/v4/projects/13/packages/pypi/files/640617ddf329c2aa2f93bbcce977f0672abfe62c07be44cb42aef03b2493ab1e/vtk-9.7.20260823.dev0-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:640617ddf329c2aa2f93bbcce977f0672abfe62c07be44cb42aef03b2493ab1e" },
-    { url = "https://gitlab.kitware.com/api/v4/projects/13/packages/pypi/files/2b57df0ce18ea5c95f1b53a6aa9c40fa3467473e3ba4ce49273390f5f6c8b01c/vtk-9.7.20260823.dev0-cp310-cp310-manylinux_2_28_aarch64.whl", hash = "sha256:2b57df0ce18ea5c95f1b53a6aa9c40fa3467473e3ba4ce49273390f5f6c8b01c" },
-    { url = "https://gitlab.kitware.com/api/v4/projects/13/packages/pypi/files/5338056c1f5df826c397c0fc4d8b37e79191af4db5a373cb741e17f8d76ad6e0/vtk-9.7.20260823.dev0-cp310-cp310-win_amd64.whl", hash = "sha256:5338056c1f5df826c397c0fc4d8b37e79191af4db5a373cb741e17f8d76ad6e0" },
-    { url = "https://gitlab.kitware.com/api/v4/projects/13/packages/pypi/files/7a25fd0863a7bd57e75a0feb9949b6058ae4e6d69c64df275849e2d553380b5d/vtk-9.7.20260823.dev0-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:7a25fd0863a7bd57e75a0feb9949b6058ae4e6d69c64df275849e2d553380b5d" },
-    { url = "https://gitlab.kitware.com/api/v4/projects/13/packages/pypi/files/1c0cf8b0c96bf014ea88b49ec9a3afe9b0eb244e436d8c212da9cf5da29d813c/vtk-9.7.20260823.dev0-cp311-cp311-manylinux_2_28_aarch64.whl", hash = "sha256:1c0cf8b0c96bf014ea88b49ec9a3afe9b0eb244e436d8c212da9cf5da29d813c" },
-    { url = "https://gitlab.kitware.com/api/v4/projects/13/packages/pypi/files/f73d47b20bfcd613087c1e4291c3235cab8a47ec28d160161cf291ddceea58f1/vtk-9.7.20260823.dev0-cp311-cp311-win_amd64.whl", hash = "sha256:f73d47b20bfcd613087c1e4291c3235cab8a47ec28d160161cf291ddceea58f1" },
-    { url = "https://gitlab.kitware.com/api/v4/projects/13/packages/pypi/files/a05dbf5a7d26c6b4a667819ad891f3266adfe7daf7ce9193830d100b3f98e271/vtk-9.7.20260823.dev0-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:a05dbf5a7d26c6b4a667819ad891f3266adfe7daf7ce9193830d100b3f98e271" },
-    { url = "https://gitlab.kitware.com/api/v4/projects/13/packages/pypi/files/6a749d163cdb2115c4133385efb7bc7f433f48c912d7aaca6a6687e42cfbaa68/vtk-9.7.20260823.dev0-cp312-cp312-manylinux_2_28_aarch64.whl", hash = "sha256:6a749d163cdb2115c4133385efb7bc7f433f48c912d7aaca6a6687e42cfbaa68" },
-    { url = "https://gitlab.kitware.com/api/v4/projects/13/packages/pypi/files/35117a4c91a9b1074dc45b4d0bde1d50d7f51aec221e53ed5540426292de70f0/vtk-9.7.20260823.dev0-cp312-cp312-win_amd64.whl", hash = "sha256:35117a4c91a9b1074dc45b4d0bde1d50d7f51aec221e53ed5540426292de70f0" },
-    { url = "https://gitlab.kitware.com/api/v4/projects/13/packages/pypi/files/900075ada9924d5273f1a8539f41015dff95a761d0bb28c69a05cdae0f0ae440/vtk-9.7.20260823.dev0-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:900075ada9924d5273f1a8539f41015dff95a761d0bb28c69a05cdae0f0ae440" },
-    { url = "https://gitlab.kitware.com/api/v4/projects/13/packages/pypi/files/fdaa474e321ed387006717277b86439a31806221e6ab95025cf26dbfcdaba439/vtk-9.7.20260823.dev0-cp313-cp313-manylinux_2_28_aarch64.whl", hash = "sha256:fdaa474e321ed387006717277b86439a31806221e6ab95025cf26dbfcdaba439" },
-    { url = "https://gitlab.kitware.com/api/v4/projects/13/packages/pypi/files/f0ec756d8fecf4a1f7a4990becee8eef13fa05dc175d244c2142b5aff2d5ada8/vtk-9.7.20260823.dev0-cp313-cp313-win_amd64.whl", hash = "sha256:f0ec756d8fecf4a1f7a4990becee8eef13fa05dc175d244c2142b5aff2d5ada8" },
-    { url = "https://gitlab.kitware.com/api/v4/projects/13/packages/pypi/files/0929e9b3e5128522a0c7567547381e8a3b92c3e223f9743e59b993131913e306/vtk-9.7.20260823.dev0-cp314-cp314-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:0929e9b3e5128522a0c7567547381e8a3b92c3e223f9743e59b993131913e306" },
-    { url = "https://gitlab.kitware.com/api/v4/projects/13/packages/pypi/files/5ee423e3e95bbc0ffbcef40cbf5f2fba5abda985ef31f8473b6062104fed5627/vtk-9.7.20260823.dev0-cp314-cp314-manylinux_2_28_aarch64.whl", hash = "sha256:5ee423e3e95bbc0ffbcef40cbf5f2fba5abda985ef31f8473b6062104fed5627" },
-    { url = "https://gitlab.kitware.com/api/v4/projects/13/packages/pypi/files/6779bfa0362a23b4ac2371af8c0502a4323a2c4629039be770dbfa90a4b73df8/vtk-9.7.20260823.dev0-cp314-cp314-win_amd64.whl", hash = "sha256:6779bfa0362a23b4ac2371af8c0502a4323a2c4629039be770dbfa90a4b73df8" },
-    { url = "https://gitlab.kitware.com/api/v4/projects/13/packages/pypi/files/36736ceed803a3b50fa9cb66893004c380ad5a168bc0dfe501f82c2fd4cd6ca3/vtk-9.7.20260823.dev0-cp314-cp314t-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:36736ceed803a3b50fa9cb66893004c380ad5a168bc0dfe501f82c2fd4cd6ca3" },
-    { url = "https://gitlab.kitware.com/api/v4/projects/13/packages/pypi/files/08b204e8ee834ea2bbb0ad66d42548b4ad6f3b78288715008c4482e74330cc16/vtk-9.7.20260823.dev0-cp314-cp314t-manylinux_2_28_aarch64.whl", hash = "sha256:08b204e8ee834ea2bbb0ad66d42548b4ad6f3b78288715008c4482e74330cc16" },
-    { url = "https://gitlab.kitware.com/api/v4/projects/13/packages/pypi/files/9809956b2f92637d9e0749b5a4c2d1f118ea20c3238a2c29c91066fead825d43/vtk-9.7.20260823.dev0-cp314-cp314t-win_amd64.whl", hash = "sha256:9809956b2f92637d9e0749b5a4c2d1f118ea20c3238a2c29c91066fead825d43" },
+    { url = "https://gitlab.kitware.com/api/v4/projects/13/packages/pypi/files/2a804383b232f60a522506db5d52d10bbd8b35a96a9028d5b6ea516a736b523e/vtk-9.7.20260913.dev0-cp310-cp310-macosx_10_15_x86_64.whl", hash = "sha256:2a804383b232f60a522506db5d52d10bbd8b35a96a9028d5b6ea516a736b523e" },
+    { url = "https://gitlab.kitware.com/api/v4/projects/13/packages/pypi/files/2ecc54de66fc13e8f5733662041fc8d66d5815a9e6e7680fa053bbbf451743af/vtk-9.7.20260913.dev0-cp310-cp310-macosx_11_0_arm64.whl", hash = "sha256:2ecc54de66fc13e8f5733662041fc8d66d5815a9e6e7680fa053bbbf451743af" },
+    { url = "https://gitlab.kitware.com/api/v4/projects/13/packages/pypi/files/e23c3d8c5c7a26e4ef442d314d21f7085a7ad50153209f65cff0a0dd402c84a6/vtk-9.7.20260913.dev0-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:e23c3d8c5c7a26e4ef442d314d21f7085a7ad50153209f65cff0a0dd402c84a6" },
+    { url = "https://gitlab.kitware.com/api/v4/projects/13/packages/pypi/files/ce9df9d39eb60ceb139464288eac88441deceff65d32244773afb5a7c5713d99/vtk-9.7.20260913.dev0-cp310-cp310-manylinux_2_28_aarch64.whl", hash = "sha256:ce9df9d39eb60ceb139464288eac88441deceff65d32244773afb5a7c5713d99" },
+    { url = "https://gitlab.kitware.com/api/v4/projects/13/packages/pypi/files/964a7b9a12dfa825ccbd3f4694f2184b738ed39112535c50c805a179645338b1/vtk-9.7.20260913.dev0-cp311-cp311-macosx_10_15_x86_64.whl", hash = "sha256:964a7b9a12dfa825ccbd3f4694f2184b738ed39112535c50c805a179645338b1" },
+    { url = "https://gitlab.kitware.com/api/v4/projects/13/packages/pypi/files/60309ce89f9c030463f0b58075d4a0b43e1bd3c26ba20132f4a9420db6c1808b/vtk-9.7.20260913.dev0-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:60309ce89f9c030463f0b58075d4a0b43e1bd3c26ba20132f4a9420db6c1808b" },
+    { url = "https://gitlab.kitware.com/api/v4/projects/13/packages/pypi/files/497962ddb790c8fc124eeb3ce3b3d916bb0a2f5b601249c01158eecfd6eb3cda/vtk-9.7.20260913.dev0-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:497962ddb790c8fc124eeb3ce3b3d916bb0a2f5b601249c01158eecfd6eb3cda" },
+    { url = "https://gitlab.kitware.com/api/v4/projects/13/packages/pypi/files/27e7a05aac281ae9bedea1e1c3db5e941427d3fcd67dbe9a2f527e6a30654945/vtk-9.7.20260913.dev0-cp311-cp311-manylinux_2_28_aarch64.whl", hash = "sha256:27e7a05aac281ae9bedea1e1c3db5e941427d3fcd67dbe9a2f527e6a30654945" },
+    { url = "https://gitlab.kitware.com/api/v4/projects/13/packages/pypi/files/3d23c5c3287a291a0eb4a835f2ea5d0766f24f7056b2fcb55c58f3c52b0efa57/vtk-9.7.20260913.dev0-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:3d23c5c3287a291a0eb4a835f2ea5d0766f24f7056b2fcb55c58f3c52b0efa57" },
+    { url = "https://gitlab.kitware.com/api/v4/projects/13/packages/pypi/files/8b9afdd726d57423dfc1b1512fe36832b72d5a89830f2c887db5fd22b41bd2fc/vtk-9.7.20260913.dev0-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:8b9afdd726d57423dfc1b1512fe36832b72d5a89830f2c887db5fd22b41bd2fc" },
+    { url = "https://gitlab.kitware.com/api/v4/projects/13/packages/pypi/files/cd60848e5cee9463e8d91f9dbb5bf19dbaf9213602ab10ab6b8ff7bf6ea86d45/vtk-9.7.20260913.dev0-cp312-cp312-manylinux_2_28_aarch64.whl", hash = "sha256:cd60848e5cee9463e8d91f9dbb5bf19dbaf9213602ab10ab6b8ff7bf6ea86d45" },
+    { url = "https://gitlab.kitware.com/api/v4/projects/13/packages/pypi/files/4e9e5f3f4a555ca73dcf3ee1b4e4d140a7dcf5a736f0f43c69c11f9439c7f0a0/vtk-9.7.20260913.dev0-cp312-cp312-win_amd64.whl", hash = "sha256:4e9e5f3f4a555ca73dcf3ee1b4e4d140a7dcf5a736f0f43c69c11f9439c7f0a0" },
+    { url = "https://gitlab.kitware.com/api/v4/projects/13/packages/pypi/files/957a147c40537911afd230fc876266174d3ff460413227c5fa6412dd93e83322/vtk-9.7.20260913.dev0-cp313-cp313-macosx_10_15_x86_64.whl", hash = "sha256:957a147c40537911afd230fc876266174d3ff460413227c5fa6412dd93e83322" },
+    { url = "https://gitlab.kitware.com/api/v4/projects/13/packages/pypi/files/17a61f7c523fad4cf2af2c58615f4cc839ea7bd1de37cbeb13746a320e4e2a5e/vtk-9.7.20260913.dev0-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:17a61f7c523fad4cf2af2c58615f4cc839ea7bd1de37cbeb13746a320e4e2a5e" },
+    { url = "https://gitlab.kitware.com/api/v4/projects/13/packages/pypi/files/23b4cd9e3028f8df5b381fe835ad3494db8c6ff431139b51675f71a6663cc6e5/vtk-9.7.20260913.dev0-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:23b4cd9e3028f8df5b381fe835ad3494db8c6ff431139b51675f71a6663cc6e5" },
+    { url = "https://gitlab.kitware.com/api/v4/projects/13/packages/pypi/files/84c309555a30b7feea1f694f5c9f4729bb2cd855bfa0a3faeeb80d81b437fa58/vtk-9.7.20260913.dev0-cp313-cp313-manylinux_2_28_aarch64.whl", hash = "sha256:84c309555a30b7feea1f694f5c9f4729bb2cd855bfa0a3faeeb80d81b437fa58" },
+    { url = "https://gitlab.kitware.com/api/v4/projects/13/packages/pypi/files/0982e2e4209eef8e7085782e7e525b10a46ad10b46445e4ffd09711d9148548b/vtk-9.7.20260913.dev0-cp314-cp314-macosx_11_0_arm64.whl", hash = "sha256:0982e2e4209eef8e7085782e7e525b10a46ad10b46445e4ffd09711d9148548b" },
+    { url = "https://gitlab.kitware.com/api/v4/projects/13/packages/pypi/files/eb62752a3337386a67129fe5404aba7727d5ca89d5d4ce896b0e2e218e848c85/vtk-9.7.20260913.dev0-cp314-cp314-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:eb62752a3337386a67129fe5404aba7727d5ca89d5d4ce896b0e2e218e848c85" },
+    { url = "https://gitlab.kitware.com/api/v4/projects/13/packages/pypi/files/3eb6db36b920b63eb99672862919d85f5108b31628f1d942dfe6b990cba9e688/vtk-9.7.20260913.dev0-cp314-cp314-manylinux_2_28_aarch64.whl", hash = "sha256:3eb6db36b920b63eb99672862919d85f5108b31628f1d942dfe6b990cba9e688" },
+    { url = "https://gitlab.kitware.com/api/v4/projects/13/packages/pypi/files/8a3b59701961b8dd98ee6ed06175abf11699afcd2916bf85078dfe6111114c12/vtk-9.7.20260913.dev0-cp314-cp314t-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:8a3b59701961b8dd98ee6ed06175abf11699afcd2916bf85078dfe6111114c12" },
+    { url = "https://gitlab.kitware.com/api/v4/projects/13/packages/pypi/files/67add874169722239866e7c269418347ae77eba6acd2f85cf38d42813f33a267/vtk-9.7.20260913.dev0-cp314-cp314t-manylinux_2_28_aarch64.whl", hash = "sha256:67add874169722239866e7c269418347ae77eba6acd2f85cf38d42813f33a267" },
 ]
 
 [[package]]
