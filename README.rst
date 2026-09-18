@@ -17,7 +17,21 @@ Install the application/library
 
     pip install color-transfer-function-designer
 
-Run the medical (label map to intensity) application
+Applications
+----------------------------------------
+
+The package is a small library (``lib/``: dataset, models, transfer, losses)
+plus shared trame widgets (``ui/``) and one mini application per scenario
+under ``apps/``. Each application has its own ``ctfd-<name>`` console script.
+
+======================  ==============  ==================================================
+Script                  Package         Scenario
+======================  ==============  ==================================================
+``ctfd-medical``        ``apps/medical``  Transfer a label-map LUT to a co-registered
+                                          intensity volume (CT/MRI)
+======================  ==============  ==================================================
+
+Run the medical application
 
 .. code-block:: console
 

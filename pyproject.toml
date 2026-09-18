@@ -47,8 +47,6 @@ dev = [
 [project.scripts]
 # One console script per mini application under apps/.
 ctfd-medical = "color_transfer_function_designer.apps.medical:main"
-# Kept for the docker bundle and existing docs; same app as ctfd-medical.
-color-transfer-function-designer = "color_transfer_function_designer.apps.medical:main"
 
 [build-system]
 requires = ["hatchling"]
