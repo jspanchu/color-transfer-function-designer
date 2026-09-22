@@ -20,24 +20,24 @@ later.
 - Inputs are non-dimensional so detectors transfer between cases.
 - Rendering in version one is a precomputed RGBA array through the stock GPU ray
   cast mapper. No custom shader.
-- UI is trame with the React client and trame-mui. The medical app stays on Vue.
+- UI is trame with Vue 3 and Vuetify, the same stack as the medical app, so the
+  file dialogs, camera sync, and client scripts in `ui/` are reused directly.
 - Labels come from rule detectors (soft, weight 1, class balanced) overridden by
   scribbles (hard, weight about 10). Body voxels and a one-voxel shell have
   weight 0.
 
-## React client conventions
+## UI conventions
 
-Verified in `examples/react_smoke.py` (MUI slider driving a vtklocal volume
-view). These differ from the Vue patterns in the medical app:
+Same stack as `apps/medical`: `trame.widgets.vuetify3`, `vtklocal.LocalView`, a
+`VApp` layout with `VAppBar` and `VMain`, state binding with `("name",)` tuples
+and `v_model`, and the shared pieces from `ui/`:
 
-- Server: `get_server(client_type="react")`; layout from `trame.ui.mui`.
-- State to prop: `value=react.Bind("opacity")`, not `value=("opacity",)`.
-- Prop to state:
-  `on_change=react.Callback("opacity = Number($event.target.value)")`, not a Vue
-  arrow-function string. `$event` is the DOM event.
-- vtklocal view events use the `on_*` names (see
-  `trame_vtklocal/widgets/vtklocal.py`).
-- The Vue-only pieces (`ui/file.py`, the color-opacity editor) are not used.
+- `ui/file.py` for the open and save dialogs.
+- `ui/module/serve/camera.js` for linking the slice and volume cameras.
+- `ui/logger.py` for logging.
+
+`examples/react_smoke.py` is kept only as a reference for the React client; it
+is not used by this app and trame-mui is not a project dependency.
 
 Dataset pressure conventions for the adapter in M1:
 
@@ -126,11 +126,11 @@ Input arrays plus `feat_<name>` (float32 probability per feature),
 
 ### M0. Environment (half a day)
 
-- pyproject: add `trame-mui`, register `ctfd-cfd-features`, add the two new lib
-  modules to `[tool.coverage.report] include`.
+- pyproject: register `ctfd-cfd-features`, add the two new lib modules to
+  `[tool.coverage.report] include`.
 - Create `apps/cfd_features/{__init__.py, main.py, core.py}` mirroring
-  `apps/medical` but with `get_server(client_type="react")`.
-- Acceptance: `ctfd-cfd-features` starts and shows an empty MUI page.
+  `apps/medical`.
+- Acceptance: `ctfd-cfd-features` starts and shows an empty Vuetify page.
 
 ### M1. `lib/flow_features.py` (2 days)
 
@@ -188,11 +188,12 @@ Pure NumPy/Torch, 100% covered.
 
 - `core.py`: `App(TrameApp)` with state for file path, reference values, four
   palette entries (visible, color, opacity), training params, progress, metrics.
-- Layout (`trame.ui.mui.SinglePageLayout`): toolbar with path field, Load,
-  Train, Reset, progress; content as a three-column `mui.Grid`: slice view
-  placeholder, `vtklocal.LocalView` of the RGBA volume, palette panel.
-- Palette rows: `Switch`, color swatch (`TextField type=color` is enough),
-  `Slider` opacity, chip showing "rule" or "trained", stroke count.
+- Layout (`VApp` with `VAppBar` and `VMain`, as in the medical app): app bar
+  with Open (via `ui/file.py`), Train, Reset, progress; content as a `VRow` with
+  three `VCol`s: slice view placeholder, `vtklocal.LocalView` of the RGBA
+  volume, palette panel.
+- Palette rows: `VSwitch`, color swatch (`VMenu` with `VColorPicker`), `VSlider`
+  opacity, `VChip` showing "rule" or "trained", stroke count.
 - On Load: read vti, compute feature vector and rule labels, predict with rules
   only, blend, upload RGBA to the mapper (4 components, independent components
   off, opacity from the fourth channel).
@@ -240,9 +241,6 @@ to get to the UI sooner.
 
 ## Risks
 
-- trame-mui is new (1.0.0). Widget prop names may need reading the generated
-  Python. Mitigation: keep the UI to Grid, Box, Switch, Slider, Button,
-  TextField, Chip, Typography.
 - Pixel-to-voxel mapping for scribbles. Mitigation: parallel projection with a
   fixed viewport and camera per slice so the mapping is a closed-form affine.
 - Rule thresholds may be wrong for the BARAM case even after scaling, because
