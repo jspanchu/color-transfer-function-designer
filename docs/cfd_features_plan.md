@@ -36,9 +36,6 @@ and `v_model`, and the shared pieces from `ui/`:
 - `ui/module/serve/camera.js` for linking the slice and volume cameras.
 - `ui/logger.py` for logging.
 
-`examples/react_smoke.py` is kept only as a reference for the React client; it
-is not used by this app and trame-mui is not a project dependency.
-
 Dataset pressure conventions for the adapter in M1:
 
 - snappy Ahmed: kinematic gauge pressure, `rho = 1`, `p_ref = 0`.
@@ -124,7 +121,7 @@ Input arrays plus `feat_<name>` (float32 probability per feature),
 
 ## Milestones
 
-### M0. Environment (half a day)
+### M0. Environment (upto 20 minutes)
 
 - pyproject: register `ctfd-cfd-features`, add the two new lib modules to
   `[tool.coverage.report] include`.
@@ -132,7 +129,7 @@ Input arrays plus `feat_<name>` (float32 probability per feature),
   `apps/medical`.
 - Acceptance: `ctfd-cfd-features` starts and shows an empty Vuetify page.
 
-### M1. `lib/flow_features.py` (2 days)
+### M1. `lib/flow_features.py` (upto 1 hour)
 
 Pure NumPy/Torch, 100% covered.
 
@@ -153,7 +150,7 @@ Pure NumPy/Torch, 100% covered.
   Check the seven inputs against hand-computed values, threshold monotonicity,
   masking, scribble override, and the holdout slab shape.
 
-### M2. `lib/feature_net.py` (2 days)
+### M2. `lib/feature_net.py` (upto 2 hours)
 
 - `FeatureNet(n_in=7, hidden=32, n_out=4)`.
 - `Standardizer` (mean/std, fit on valid voxels).
@@ -172,7 +169,7 @@ Pure NumPy/Torch, 100% covered.
   torch vs NumPy forward agreement within 1e-6, blend edge cases (all zero, one
   feature, overlapping), JSON round trip.
 
-### M3. Offline scripts (1 day)
+### M3. Offline scripts (upto 2 hours)
 
 - `scripts/train_features.py --volume --ref ... --scribbles --out weights.json`
   prints metrics and writes `*_features.vti` with probabilities and RGBA.
@@ -184,7 +181,7 @@ Pure NumPy/Torch, 100% covered.
   script and a pressure adapter) and eyeball the result. This is the first
   transfer test.
 
-### M4. App: volume view and palette (3 days)
+### M4. App: volume view and palette (upto 2 hours)
 
 - `core.py`: `App(TrameApp)` with state for file path, reference values, four
   palette entries (visible, color, opacity), training params, progress, metrics.
@@ -203,7 +200,7 @@ Pure NumPy/Torch, 100% covered.
 - Acceptance: load, see rule-based render, change a color, train, see the render
   update, metrics appear.
 
-### M5. Slice view and scribbles (3 days)
+### M5. Slice view and scribbles (upto 2 hours)
 
 - Slice view: second `vtklocal.LocalView` with a `vtkImageSlice` of the chosen
   background field plus a second slice of the RGBA feature array on top,
@@ -220,7 +217,7 @@ Pure NumPy/Torch, 100% covered.
 - Acceptance: paint a stroke, train, watch the slice overlay and the volume
   change where painted; save scribbles, restart, load, retrain reproduces.
 
-### M6. Validation and export (1 day)
+### M6. Validation and export (upto 1 hour)
 
 - Holdout slab toggle; metrics table in the palette panel for train and holdout.
 - Export button: write `*_features.vti` and `weights.json`.
