@@ -983,7 +983,7 @@ class App(TrameApp):
             self._apply_crop_client("tgt")
 
     def _init_reference_view_camera_sync(self, **_):
-        """Hand the renderer wasm ids to the client once the reference view is ready.
+        """Hand the renderer/camera wasm ids to the client once the reference view is ready.
         Fires on every LocalView ``updated`` event.
         """
         if self._ref_renderer_wasm_id is None or self._tgt_renderer_wasm_id is None:
@@ -995,11 +995,16 @@ class App(TrameApp):
                 "srcRefName": self._ref_html_view.ref_name,
                 "dstRefName": self._tgt_html_view.ref_name,
                 "srcRendererId": self._ref_renderer_wasm_id,
+                # Passed from here so the client never calls getActiveCamera():
+                # turning its result into a proxy serializes in the browser.
+                "srcCameraId": self._ref_html_view.get_wasm_id(
+                    self._ref_renderer.GetActiveCamera()
+                ),
             }
         )
 
     def _init_target_view_camera_sync(self, **_):
-        """Hand the renderer wasm ids to the client once the target view is ready.
+        """Hand the renderer/camera wasm ids to the client once the target view is ready.
         Fires on every LocalView ``updated`` event.
         """
         if self._ref_renderer_wasm_id is None or self._tgt_renderer_wasm_id is None:
@@ -1011,6 +1016,11 @@ class App(TrameApp):
                 "srcRefName": self._tgt_html_view.ref_name,
                 "dstRefName": self._ref_html_view.ref_name,
                 "srcRendererId": self._tgt_renderer_wasm_id,
+                # Passed from here so the client never calls getActiveCamera():
+                # turning its result into a proxy serializes in the browser.
+                "srcCameraId": self._tgt_html_view.get_wasm_id(
+                    self._tgt_renderer.GetActiveCamera()
+                ),
             }
         )
 
@@ -1456,10 +1466,10 @@ class App(TrameApp):
             FileDialog(is_open=False, file_browser=self.file_browser)
 
             # Client-side camera sync between the two LocalViews.
-            # `camera_sync_init` captures the renderer id for a view and observes its camera for modifications
+            # `camera_sync_init` captures the renderer/camera ids for a view and observes its camera for modifications
             # `camera_sync_once` snaps the views together when linking.
             self.ctrl.camera_sync_init = client.JSEval(
-                exec="utils.colorTransferFunctionDesignerCamera.setup($event.srcRefName, $event.dstRefName, $event.srcRendererId)",
+                exec="utils.colorTransferFunctionDesignerCamera.setup($event.srcRefName, $event.dstRefName, $event.srcRendererId, $event.srcCameraId)",
             ).exec
             self.ctrl.camera_sync_once = client.JSEval(
                 exec="utils.colorTransferFunctionDesignerCamera.sync($event.srcRefName, $event.dstRefName)",

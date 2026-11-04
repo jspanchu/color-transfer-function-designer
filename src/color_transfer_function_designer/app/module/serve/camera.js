@@ -1,55 +1,62 @@
 (() => {
   let suppressCameraSync = false;
+  // refName -> { rendererId, cameraId, renderer, camera, cameraObserver }
   const viewObservers = new Map();
 
-  // Copy the active-camera view params from src to dst, refit the dst clipping
-  // range (the two volumes have different bounds) and redraw the dst view. The
-  // suppress flag swallows the dst ModifiedEvent fired during set()/clipping so
-  // the mirror does not echo back into an infinite loop.
-  async function copyCamera(srcRefName, dstRefName) {
+  function copyCamera(srcRefName, dstRefName) {
     if (suppressCameraSync) return;
     if (!window.trame.state.get("camera_linked")) return;
-    const srcView = window.trame.refs[srcRefName];
+    const src = viewObservers.get(srcRefName);
+    const dst = viewObservers.get(dstRefName);
     const dstView = window.trame.refs[dstRefName];
-    if (!srcView || !dstView) return;
-    const srcRendererId = viewObservers.get(srcRefName).rendererId;
-    const dstRendererId = viewObservers.get(dstRefName).rendererId;
-    const srcRenderer = srcView.getVtkObject(srcRendererId);
-    const dstRenderer = dstView.getVtkObject(dstRendererId);
-    const srcCamera = await srcRenderer.getActiveCamera();
-    const dstCamera = await dstRenderer.getActiveCamera();
+    if (!src || !dst || !dstView) return;
+    const srcCamera = src.camera;
+    const dstCamera = dst.camera;
     suppressCameraSync = true;
     try {
-      await dstCamera.setPosition(srcCamera.position);
-      await dstCamera.setFocalPoint(srcCamera.focalPoint);
-      await dstCamera.setViewUp(srcCamera.viewUp);
-      await dstCamera.setViewAngle(srcCamera.viewAngle);
-      await dstCamera.setParallelScale(srcCamera.parallelScale);
-      await dstCamera.setParallelProjection(srcCamera.parallelProjection);
-      await dstRenderer.resetCameraClippingRange();
+      dstCamera.setPosition(srcCamera.getPosition());
+      dstCamera.setFocalPoint(srcCamera.getFocalPoint());
+      dstCamera.setViewUp(srcCamera.getViewUp());
+      dstCamera.setViewAngle(srcCamera.getViewAngle());
+      dstCamera.setParallelScale(srcCamera.getParallelScale());
+      dstCamera.setParallelProjection(
+        srcCamera.getParallelProjection(),
+      );
+      dst.renderer.resetCameraClippingRange();
     } finally {
       suppressCameraSync = false;
     }
     // Redraw the destination view client-side.
-    window.trame.refs[dstRefName].render();
+    dstView.render();
   }
 
   window.trame.utils.colorTransferFunctionDesignerCamera = {
-    setup: async (refName, dstRefName, rendererId) => {
+    setup: (refName, dstRefName, rendererId, cameraId) => {
       const view = window.trame.refs[refName];
-      if (!view) return; // a view not mounted yet -> retry on next `updated`
-      // `setup` fires on every view `updated` event; the renderer (and its
-      // camera) is persistent, so observe it once. Re-observing each update
-      // would stack duplicate ModifiedEvent observers.
+      if (!view || !rendererId || !cameraId) return; // retry on next `updated`
+      // `setup` fires on every view `updated` event; the renderer and camera
+      // are persistent, so build the proxies and observe once. Re-observing
+      // each update would stack duplicate ModifiedEvent observers, and
+      // rebuilding proxies would re-serialize.
       const existing = viewObservers.get(refName);
-      if (existing && existing.rendererId === rendererId) return;
-      let entry = { rendererId: 0, cameraObserver: 0 };
+      if (
+        existing &&
+        existing.rendererId === rendererId &&
+        existing.cameraId === cameraId
+      )
+        return;
+      if (existing) existing.camera.$unObserve(existing.cameraObserver);
       const renderer = view.getVtkObject(rendererId);
-      const camera = await renderer.getActiveCamera();
-      entry.rendererId = rendererId;
-      entry.cameraObserver = camera.$observe("ModifiedEvent", () =>
-        copyCamera(refName, dstRefName),
-      );
+      const camera = view.getVtkObject(cameraId);
+      const entry = {
+        rendererId,
+        cameraId,
+        renderer,
+        camera,
+        cameraObserver: camera.$observe("ModifiedEvent", () =>
+          copyCamera(refName, dstRefName),
+        ),
+      };
       viewObservers.set(refName, entry);
     },
     sync: (srcRefName, dstRefName) => {
