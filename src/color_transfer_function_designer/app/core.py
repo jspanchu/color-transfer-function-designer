@@ -1372,8 +1372,9 @@ class App(TrameApp):
 
             # Settings dialog 2 - centralized settings editor for transfer, losses, etc.
             with vuetify3.VDialog(
-                model_value=("show_settings_editor_dialog",),
-                persistent=True,
+                # Settings are live-edited, so nothing is lost on dismiss: allow
+                # Esc / outside click to close the dialog.
+                v_model=("show_settings_editor_dialog",),
                 max_width=900,
                 # Pin the height on the dialog (its overlay-content wrapper is the
                 # box that actually gets measured) so it stays fixed as categories
@@ -1449,12 +1450,12 @@ class App(TrameApp):
                                 self._target_lookup_table_settings_editor()
                     vuetify3.VDivider()
                     with vuetify3.VCardActions():
-                        vuetify3.VSpacer()
                         vuetify3.VBtn(
-                            "Reset",
+                            "Reset to defaults",
                             variant="text",
                             click=self._set_default_parameters,
                         )
+                        vuetify3.VSpacer()
                         vuetify3.VBtn(
                             "Close",
                             color="primary",
