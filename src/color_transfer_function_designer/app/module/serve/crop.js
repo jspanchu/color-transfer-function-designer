@@ -9,6 +9,7 @@
       mapperId: null,
       planeId: null,
       refName: null,
+      proxies: null,
     },
     tgt: {
       bounds: null,
@@ -17,8 +18,34 @@
       mapperId: null,
       planeId: null,
       refName: null,
+      proxies: null,
     },
   };
+
+  // Build (once) and hold the wasm proxies for a view's mapper / plane / image
+  // actor. Creating a proxy with getVtkObject serializes the object
+  // client-side, which, while server updates stream in (e.g. during a
+  // transfer), leaves the client scene out of sync with the server. The client
+  // only caches proxies through a WeakRef, so they are kept here strongly and
+  // rebuilt only when the ids or view change.
+  function getProxies(cfg) {
+    const key = [cfg.refName, cfg.mapperId, cfg.planeId, cfg.imageActorId].join(
+      ":",
+    );
+    if (cfg.proxies && cfg.proxies.key === key) return cfg.proxies;
+    const view = window.trame.refs[cfg.refName];
+    if (!view) return null;
+    cfg.proxies = {
+      key,
+      view,
+      mapper: view.getVtkObject(cfg.mapperId),
+      plane: view.getVtkObject(cfg.planeId),
+      imageActor: cfg.imageActorId
+        ? view.getVtkObject(cfg.imageActorId)
+        : null,
+    };
+    return cfg.proxies;
+  }
 
   // Toolbar direction -> clipping-plane normal / axis
   // A volume mapper keeps the half-space the normal points
@@ -36,17 +63,16 @@
   // Sync a view's wasm clipping plane to its current crop toolbar state. The
   // plane is axis-aligned; position is a percentage [0, 100] along the active
   // axis so it stays valid when the direction changes.
-  async function applyCrop(key) {
+  // None of the wasm methods used here may suspend, so they run synchronously.
+  function applyCrop(key) {
     const cfg = cropViews[key];
     if (!cfg || cfg.mapperId === null || cfg.bounds === null) return;
-    const view = window.trame.refs[cfg.refName];
-    if (!view) return;
-    const mapper = view.getVtkObject(cfg.mapperId);
-    const plane = view.getVtkObject(cfg.planeId);
-    const imageActor = view.getVtkObject(cfg.imageActorId);
+    const proxies = getProxies(cfg);
+    if (!proxies) return;
+    const { view, mapper, plane, imageActor } = proxies;
     if (!mapper || !plane) return;
 
-    await mapper.removeAllClippingPlanes();
+    mapper.removeAllClippingPlanes();
     if (window.trame.state.get(key + "_crop_enabled")) {
       const direction = window.trame.state.get(key + "_crop_direction");
       const percent = Number(window.trame.state.get(key + "_crop_position"));
@@ -59,9 +85,9 @@
       ];
       origin[axis] =
         b[2 * axis] + (percent / 100.0) * (b[2 * axis + 1] - b[2 * axis]);
-      await plane.setOrigin(origin);
-      await plane.setNormal(CROP_NORMALS[direction]);
-      await mapper.addClippingPlane(plane);
+      plane.setOrigin(origin);
+      plane.setNormal(CROP_NORMALS[direction]);
+      mapper.addClippingPlane(plane);
 
       if (imageActor) {
         const e = cfg.extent; // [x0, x1, y0, y1, z0, z1]
@@ -71,11 +97,11 @@
         const de = [...e];
         de[2 * axis] = idx;
         de[2 * axis + 1] = idx;
-        await imageActor.setDisplayExtent(...de);
-        await imageActor.setVisibility(1);
+        imageActor.setDisplayExtent(...de);
+        imageActor.setVisibility(1);
       }
     } else if (imageActor) {
-      await imageActor.setVisibility(0);
+      imageActor.setVisibility(0);
     }
     // Redraw the view client-side.
     view.render();
@@ -114,7 +140,7 @@
   }
 
   window.trame.utils.colorTransferFunctionDesignerCrop = {
-    setup: async (payload) => {
+    setup: (payload) => {
       const cfg = cropViews[payload.key];
       cfg.bounds = payload.bounds;
       cfg.extent = payload.extent;
@@ -139,7 +165,7 @@
       if (payload.relink && window.trame.state.get("crop_linked")) {
         mirrorCrop("ref", payload.key);
       }
-      await applyCrop(payload.key);
+      applyCrop(payload.key);
     },
     // Drop a view's cached wasm handles before its volume is unloaded. The
     // mapper object is pruned from the wasm scene on the next `update()`, so a
@@ -152,6 +178,7 @@
       cfg.imageActorId = null;
       cfg.mapperId = null;
       cfg.planeId = null;
+      cfg.proxies = null;
     },
   };
 })();
