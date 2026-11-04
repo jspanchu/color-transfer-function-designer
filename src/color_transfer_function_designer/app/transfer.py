@@ -43,11 +43,18 @@ def lut_from_network(
     grad_t = torch.linspace(0.0, gradient_range[1], n_points, device=device)
     t = torch.stack((t, grad_t), dim=1)  # (N, 2)
 
+    # Restore the caller's mode afterwards: this is also called mid-training
+    # (progress snapshots), where leaving the model in eval mode would leak into
+    # the remaining training steps.
+    was_training = model.training
     model.eval()
-    with torch.no_grad():
-        output = model(t).cpu().numpy()  # (N, 4)
-        rgba = output[:, :4]  # (N, 4)
-        grad_a = output[:, 4]  # (N,) gradient opacity
+    try:
+        with torch.no_grad():
+            output = model(t).cpu().numpy()  # (N, 4)
+    finally:
+        model.train(was_training)
+    rgba = output[:, :4]  # (N, 4)
+    grad_a = output[:, 4]  # (N,) gradient opacity
 
     scalars = (
         (t[:, 0] * (scalar_range[1] - scalar_range[0]) + scalar_range[0]).cpu().numpy()

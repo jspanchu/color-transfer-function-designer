@@ -37,6 +37,15 @@ def test_lut_from_network(tgt_volume):
     assert all(isinstance(c, float) for c in rgb)
 
 
+@pytest.mark.parametrize("training", [True, False])
+def test_lut_from_network_preserves_training_mode(tgt_volume, training):
+    model = TransferFunctionNet()
+    model.train(training)
+    lut_from_network(model, tgt_volume, n_points=8)
+    assert model.training is training
+    assert all(m.training is training for m in model.modules())
+
+
 def test_transfer_reference_lut_with_callback(
     ref_volume, tgt_volume, lut_rgb, lut_scalar_alpha, lut_gradient_alpha
 ):
