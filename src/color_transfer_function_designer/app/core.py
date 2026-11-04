@@ -725,7 +725,6 @@ class App(TrameApp):
             ctf, otf, gof = self._build_network_transfer_functions(
                 self._tgt_volume_data, snapshot_lut_in_state=True
             )
-            self._tgt_volume.mapper.Modified()
             self._apply_tf_to_tgt_volume(ctf, otf, gof)
             assert self._tgt_html_view is not None
             self._tgt_html_view.update()
