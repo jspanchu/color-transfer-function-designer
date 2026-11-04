@@ -1,5 +1,5 @@
 {
-  "transfer_function_file": "./data/volumes/original/CC0305_ge_3_59_M_seg.vp",
+  "transfer_function_file": "./data/volumes/original/CC0305_ge_3_59_M_seg_fsl_fast.vp",
   "reference_volume_file": "./data/volumes/original/CC0305_ge_3_59_M_seg.nii.gz",
   "target_volume_file": "./data/volumes/registered_on_ge_3_59_M/reg_philips_3_42_m.nii.gz",
   "camera": {
