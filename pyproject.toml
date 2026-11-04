@@ -121,6 +121,7 @@ isort.required-imports = []
 "tests/**" = ["T20"]
 "noxfile.py" = ["T20"]
 "src/**" = ["SIM117"]
+"scripts/**" = ["T201"]
 [tool.semantic_release]
 version_toml = [
     "pyproject.toml:project.version",

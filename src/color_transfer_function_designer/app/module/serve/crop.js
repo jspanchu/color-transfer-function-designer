@@ -40,9 +40,7 @@
       view,
       mapper: view.getVtkObject(cfg.mapperId),
       plane: view.getVtkObject(cfg.planeId),
-      imageActor: cfg.imageActorId
-        ? view.getVtkObject(cfg.imageActorId)
-        : null,
+      imageActor: cfg.imageActorId ? view.getVtkObject(cfg.imageActorId) : null,
     };
     return cfg.proxies;
   }

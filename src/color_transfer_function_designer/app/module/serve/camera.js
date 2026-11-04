@@ -19,9 +19,7 @@
       dstCamera.setViewUp(srcCamera.getViewUp());
       dstCamera.setViewAngle(srcCamera.getViewAngle());
       dstCamera.setParallelScale(srcCamera.getParallelScale());
-      dstCamera.setParallelProjection(
-        srcCamera.getParallelProjection(),
-      );
+      dstCamera.setParallelProjection(srcCamera.getParallelProjection());
       dst.renderer.resetCameraClippingRange();
     } finally {
       suppressCameraSync = false;

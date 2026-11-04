@@ -33,7 +33,7 @@ import sys
 
 import numpy as np
 import torch
-import vtkmodules.vtkRenderingOpenGL2  # noqa: F401
+import vtkmodules.vtkRenderingOpenGL2
 import vtkmodules.vtkRenderingVolumeOpenGL2  # noqa: F401
 from vtkmodules.util.numpy_support import numpy_to_vtk, vtk_to_numpy
 from vtkmodules.vtkCommonCore import VTK_DOUBLE
