@@ -210,6 +210,10 @@ class App(TrameApp):
         # unlocks the tgt crop UI and re-applies the (transfer-wiped) crop.
         self._tgt_crop_unlock_pending = False
 
+        # Optional camera from the config file; applied instead of ResetCamera()
+        # whenever a volume is loaded.
+        self._initial_camera: dict | None = None
+
         self._generate_ui()
 
         if config is not None:
@@ -445,7 +449,7 @@ class App(TrameApp):
         self._ref_renderer.AddViewProp(self._ref_image_actor)
         self._ref_renderer.AddVolume(self._ref_volume)
         self._check_all_loaded()
-        self._ref_renderer.ResetCamera()
+        self._reset_camera(self._ref_renderer)
         assert self._ref_html_view is not None
         self._ref_html_view.update(push_camera=True)
 
@@ -520,7 +524,7 @@ class App(TrameApp):
         self._tgt_renderer.AddViewProp(self._tgt_image_actor)
         self._tgt_renderer.AddVolume(self._tgt_volume)
         self._check_all_loaded()
-        self._tgt_renderer.ResetCamera()
+        self._reset_camera(self._tgt_renderer)
         assert self._tgt_html_view is not None
         self._tgt_html_view.update(push_camera=True)
 
@@ -546,6 +550,53 @@ class App(TrameApp):
         self._tgt_html_view.update()
         self._check_all_loaded()
 
+    def _reset_camera(self, renderer) -> None:
+        """Reset the camera to fit the scene, then apply the configured camera if any."""
+        renderer.ResetCamera()
+        if self._initial_camera is None:
+            return
+        cam = renderer.GetActiveCamera()
+        c = self._initial_camera
+        if "position" in c:
+            cam.SetPosition(*c["position"])
+        if "focal_point" in c:
+            cam.SetFocalPoint(*c["focal_point"])
+        if "view_up" in c:
+            cam.SetViewUp(*c["view_up"])
+        if "view_angle" in c:
+            cam.SetViewAngle(c["view_angle"])
+        if "parallel_scale" in c:
+            cam.SetParallelScale(c["parallel_scale"])
+        if "parallel_projection" in c:
+            cam.SetParallelProjection(bool(c["parallel_projection"]))
+        renderer.ResetCameraClippingRange()
+
+    def _parse_camera_config(self, cfg) -> dict | None:
+        if not isinstance(cfg, dict):
+            self.logger.error("camera config must be an object, got %r", cfg)
+            return None
+        camera = {}
+        for key in ("position", "focal_point", "view_up"):
+            if key in cfg:
+                value = cfg[key]
+                if not (
+                    isinstance(value, list)
+                    and len(value) == 3
+                    and all(isinstance(v, (int, float)) for v in value)
+                ):
+                    self.logger.error("camera.%s must be a list of 3 numbers", key)
+                    continue
+                camera[key] = [float(v) for v in value]
+        for key in ("view_angle", "parallel_scale"):
+            if key in cfg:
+                if not isinstance(cfg[key], (int, float)):
+                    self.logger.error("camera.%s must be a number", key)
+                    continue
+                camera[key] = float(cfg[key])
+        if "parallel_projection" in cfg:
+            camera["parallel_projection"] = bool(cfg["parallel_projection"])
+        return camera or None
+
     def _load_from_config(self, config_path: str) -> None:
         self.logger.debug("Load configuration from %s", config_path)
         try:
@@ -554,6 +605,10 @@ class App(TrameApp):
         except (OSError, json.JSONDecodeError) as exc:
             self.logger.error("Could not load config %s: %s", config_path, exc)
             return
+
+        # Parse before loading volumes so the loads pick it up.
+        if (camera := cfg.get("camera")) is not None:
+            self._initial_camera = self._parse_camera_config(camera)
 
         if tf := cfg.get("transfer_function_file"):
             path = pathlib.Path(tf).resolve()
