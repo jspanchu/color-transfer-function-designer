@@ -160,6 +160,8 @@ class App(TrameApp):
 
         # Progress state
         self.state.progress_percent = 0
+        self.state.progress_epoch = 0
+        self.state.progress_slice = 0
 
         # Transfer function state
         self.state.target_lut_source = "linear_map"
@@ -660,7 +662,11 @@ class App(TrameApp):
             ):
                 self._last_progress_update_time = now
                 loop.call_soon_threadsafe(
-                    self._on_transfer_progress, progress_percent, loss
+                    self._on_transfer_progress,
+                    progress_percent,
+                    loss,
+                    epoch_id,
+                    min(batch_id * self.state.batch_size, self.state.n_slices),
                 )
 
         self._transfer_executor_future = loop.run_in_executor(
@@ -704,7 +710,7 @@ class App(TrameApp):
 
         return self._transfer_executor_future
 
-    def _on_transfer_progress(self, progress_percent, loss):
+    def _on_transfer_progress(self, progress_percent, loss, epoch, slice_id):
         assert progress_percent >= 0, (
             "progress_percent must be greater than or equal to 0"
         )
@@ -713,6 +719,8 @@ class App(TrameApp):
         )
         with self.state:
             self.state.progress_percent = int(progress_percent)
+            self.state.progress_epoch = epoch
+            self.state.progress_slice = slice_id
             self.state.training_loss = loss
             ctf, otf, gof = self._build_network_transfer_functions(
                 self._tgt_volume_data, snapshot_lut_in_state=True
@@ -1334,7 +1342,10 @@ class App(TrameApp):
                 with vuetify3.VCard():
                     vuetify3.VCardTitle("Transfer transfer function?")
                     vuetify3.VCardText(
-                        f"The network will transfer the provided lookup tables from the reference volume to the scalar volume using {self.state.n_epochs} epochs. Proceed?"
+                        "The network will transfer the provided lookup tables from the "
+                        "reference volume to the scalar volume using {{ n_epochs }} "
+                        "epoch(s) over {{ n_slices }} slices per epoch "
+                        "({{ n_epochs * n_slices }} slices in total). Proceed?"
                     )
                     with vuetify3.VCardActions():
                         vuetify3.VSpacer()
@@ -1668,6 +1679,12 @@ class App(TrameApp):
                                     click="show_transfer_dialog = true",
                                     disabled=("!allow_transfer",),
                                 )
+                            html.Div(
+                                "Epoch: {{ progress_epoch }}/{{ n_epochs }} "
+                                "Slice: {{ progress_slice }}/{{ n_slices }}",
+                                v_if=("progress_percent > 0 && progress_percent < 100"),
+                                classes="text-caption text-left",
+                            )
                             vuetify3.VProgressLinear(
                                 model_value=("progress_percent",),
                                 v_if=("progress_percent > 0 && progress_percent < 100"),
